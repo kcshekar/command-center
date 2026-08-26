@@ -1,0 +1,10 @@
+{
+  "name": "@command-center/api",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot index.ts"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^8.0.1"
+  }
+}

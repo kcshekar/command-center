@@ -1,0 +1,16 @@
+{
+  "name": "command-center",
+  "private": true,
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "bun run --cwd apps/api dev",
+    "dev:web": "bun run --cwd apps/web dev",
+    "migrate": "bun run apps/api/migrations/run.ts"
+  },
+  "devDependencies": {
+    "bun-types": "^1.4.0"
+  }
+}
