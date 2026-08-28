@@ -5,6 +5,10 @@
     "dev": "bun --hot index.ts"
   },
   "dependencies": {
-    "@google-cloud/storage": "^8.0.1"
+    "@google-cloud/storage": "^8.0.1",
+    "nodemailer": "^9.0.5"
+  },
+  "devDependencies": {
+    "@types/nodemailer": "^8.0.1"
   }
 }

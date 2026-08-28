@@ -1,12 +1,12 @@
--- Password vault. Same zero-knowledge pattern as secrets projects: each item
--- gets its own DEK wrapped under the owner's master key, so rotating the
--- master password only needs to re-wrap DEKs, not re-encrypt every payload.
+-- Password vault. Same zero-knowledge pattern as secrets projects, now
+-- scoped by workspace instead of user: each item gets its own DEK wrapped
+-- under its workspace's key, so changing that workspace's password only
+-- re-wraps the workspace key, not every item.
 -- label/url are plaintext (list/search UX); username/password/notes are the
 -- encrypted JSON payload.
 CREATE TABLE vault_items (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  org_id        uuid NOT NULL REFERENCES organizations(id),
-  owner_id      uuid NOT NULL REFERENCES users(id),
+  workspace_id  uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   label         text NOT NULL,
   url           text,
   ciphertext    bytea NOT NULL,
@@ -18,5 +18,9 @@ CREATE TABLE vault_items (
 );
 
 ALTER TABLE vault_items ENABLE ROW LEVEL SECURITY;
-CREATE POLICY vault_items_tenant ON vault_items
-  USING (org_id = current_setting('app.current_org_id', true)::uuid);
+CREATE POLICY vault_items_workspace ON vault_items
+  USING (EXISTS (
+    SELECT 1 FROM workspaces w
+    WHERE w.id = vault_items.workspace_id
+      AND w.user_id = current_setting('app.current_user_id', true)::uuid
+  ));
