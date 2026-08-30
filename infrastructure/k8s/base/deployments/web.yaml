@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: command-center
+  labels:
+    app: web
+    app.kubernetes.io/part-of: command-center
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+        app.kubernetes.io/part-of: command-center
+    spec:
+      containers:
+        - name: web
+          image: web
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+          env:
+            # Server-side only (read at request time by next.config.ts's
+            # rewrites(), never baked into the client bundle) — same var
+            # docker-compose.yml already sets for local Docker runs.
+            - name: API_ORIGIN
+              value: "http://api.command-center.svc.cluster.local:80"
+          envFrom:
+            - secretRef:
+                name: command-center-secrets
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12

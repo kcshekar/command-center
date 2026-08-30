@@ -1,0 +1,48 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: command-center
+
+resources:
+  - ../../base
+
+patches:
+  # Production overlay: scale up and give more headroom once real traffic
+  # justifies it. Uncomment when ready — this is a single-tenant personal/
+  # small-business tool today, so base (1 replica) is the honest default.
+  # - target:
+  #     kind: Deployment
+  #     name: api
+  #   patch: |
+  #     - op: replace
+  #       path: /spec/replicas
+  #       value: 2
+  #     - op: replace
+  #       path: /spec/template/spec/containers/0/resources/requests/memory
+  #       value: "384Mi"
+  #     - op: replace
+  #       path: /spec/template/spec/containers/0/resources/requests/cpu
+  #       value: "200m"
+  #     - op: replace
+  #       path: /spec/template/spec/containers/0/resources/limits/memory
+  #       value: "1Gi"
+  #     - op: replace
+  #       path: /spec/template/spec/containers/0/resources/limits/cpu
+  #       value: "1000m"
+  # - target:
+  #     kind: Deployment
+  #     name: web
+  #   patch: |
+  #     - op: replace
+  #       path: /spec/replicas
+  #       value: 2
+  # - target:
+  #     kind: HorizontalPodAutoscaler
+  #     name: api-hpa
+  #   patch: |
+  #     - op: replace
+  #       path: /spec/minReplicas
+  #       value: 2
+  #     - op: replace
+  #       path: /spec/maxReplicas
+  #       value: 5

@@ -1,0 +1,45 @@
+# cat <<EOF | kubectl apply -f -
+# Replace the hostname below with your real domain before applying, and make
+# sure it resolves (A record) to the static IP created in cluster-setup.sh
+# (kubectl get ingress -n command-center shows the assigned address once GCE
+# finishes provisioning it).
+#
+# Only `web` is exposed publicly — `api` is deliberately ClusterIP-only.
+# apps/web/next.config.ts already rewrites /api/* to API_ORIGIN server-side
+# (see deployments/web.yaml), so the browser only ever talks to one origin;
+# that's also what keeps the session cookie plain SameSite=Lax with no CORS
+# handling needed. Giving `api` its own public host would bypass that
+# same-origin design for no benefit — don't add one unless something else
+# genuinely needs to call the API directly from outside the cluster.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: common-ingress-staging
+  namespace: command-center
+  labels:
+    app.kubernetes.io/part-of: command-center
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.allow-http: "true"
+    kubernetes.io/ingress.global-static-ip-name: command-center-ip # must be a global, not regional, static IP
+    cert-manager.io/issuer: letsencrypt-staging # must match issuer.yaml -> metadata.name
+    ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: gce
+  tls:
+    - hosts:
+        - command-center.example.com
+      secretName: command-center-tls-secret
+  rules:
+    - host: command-center.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+
+# EOF

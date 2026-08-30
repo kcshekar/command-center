@@ -409,7 +409,7 @@ export const financeRoutes = {
       const prompt = `Write a short, professional email (3-4 sentences, no subject line) to a chartered accountant, sending them export invoices for ${monthLabel} to file. Mention there are ${invoices.length} invoice(s) attached, totaling ${totalsLines}. Do not invent any other details.\n\nInvoices:\n${invoiceLines}`;
       const draftBody = await draftText(prompt);
       const draftSubject = `Export invoices for ${monthLabel} — PAMETNI TECH IT SOLUTIONS PRIVATE LIMITED`;
-      const recipientEmail = process.env.CA_EMAIL ?? "";
+      const recipientEmail = "";
 
       const [existingDraft] = await ctx.tx`
         SELECT id FROM ca_invoice_batches WHERE period_month = ${firstOfMonth}::date AND status = 'draft' AND finance_project_id = ${projectId}

@@ -20,7 +20,7 @@ Reads `DATABASE_URL` from the environment, or from the repo-root `.env` if not a
 Schedule it with cron for unattended backups, e.g. nightly at 2am:
 
 ```
-0 2 * * * cd /path/to/memoryAllocator && bun run db:backup >> /var/log/command-center-backup.log 2>&1
+0 2 * * * cd /path/to/command-center && bun run db:backup >> /var/log/command-center-backup.log 2>&1
 ```
 
 The dump is taken with `--no-owner --no-privileges`: role names (and their passwords) differ across environments, so ownership/grants are never captured in the dump — restore always ends with re-running `bootstrap-app-role.ts` instead, which is idempotent and safe to run on a fresh or existing database.

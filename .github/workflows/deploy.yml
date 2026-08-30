@@ -1,0 +1,213 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ develop ]
+  release:
+    types: [ published ]
+
+concurrency:
+  group: deploy-${{ github.event_name == 'release' && 'production' || 'staging' }}
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ secrets.GKE_REGION || 'us-central1' }}
+  GAR_HOSTNAME: "us-central1-docker.pkg.dev"
+  IMAGE_TAG: command-center-${{ github.sha }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Determine deployment environment
+  # ─────────────────────────────────────────────
+  resolve-env:
+    name: Resolve Environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      overlay: ${{ steps.env.outputs.overlay }}
+    steps:
+      - name: Set environment
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "overlay=production" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=staging" >> "$GITHUB_OUTPUT"
+            echo "overlay=staging" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─────────────────────────────────────────────
+  # Build Docker images and push to Google Artifact Registry
+  # ─────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [ resolve-env ]
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api
+            context: .
+            dockerfile: apps/api/Dockerfile
+          - service: web
+            context: .
+            dockerfile: apps/web/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: "${{ secrets.GCP_SA_KEY }}"
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GAR_HOSTNAME }} --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: buildx-${{ matrix.service }}-${{ github.sha }}
+          restore-keys: |
+            buildx-${{ matrix.service }}-
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.GAR_HOSTNAME }}/${{ env.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/command-center/${{ matrix.service }}:${{ env.IMAGE_TAG }}
+            ${{ env.GAR_HOSTNAME }}/${{ env.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/command-center/${{ matrix.service }}:${{ needs.resolve-env.outputs.environment }}-latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      # Prevents cache from growing unbounded
+      - name: Rotate cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  # ─────────────────────────────────────────────
+  # Run pending migrations against the target database
+  # ─────────────────────────────────────────────
+  # This runner needs its own direct network path to whatever Postgres
+  # instance secrets.APP_SECRETS' DATABASE_URL points at for this
+  # environment — a public IP with SSL enforced, a Cloud SQL Auth Proxy step
+  # added here, or a self-hosted runner inside the same VPC. That's on
+  # whatever the live DB setup actually is; nothing tailnet-specific belongs
+  # in this file (Tailscale is for local dev only).
+  migrate:
+    name: Run DB Migrations
+    runs-on: ubuntu-latest
+    needs: [ resolve-env, build-and-push ]
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: ${{ fromJson(secrets.APP_SECRETS).DATABASE_URL }}
+        run: bun run migrate
+
+  # ─────────────────────────────────────────────
+  # Deploy to Kubernetes (GKE)
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to ${{ needs.resolve-env.outputs.environment }}
+    runs-on: ubuntu-latest
+    needs: [ resolve-env, build-and-push, migrate ]
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    env:
+      USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: "${{ secrets.GCP_SA_KEY }}"
+
+      - name: "Set up Cloud SDK"
+        uses: "google-github-actions/setup-gcloud@v1"
+
+      # Enable component for gke-gcloud-auth-plugin
+      - name: Enable gke-gcloud-auth-plugin component
+        run: |
+          gcloud components install gke-gcloud-auth-plugin
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials \
+            ${{ secrets.GKE_CLUSTER }} \
+            --region ${{ env.GCP_REGION }} \
+            --project ${{ env.GCP_PROJECT_ID }}
+
+      - name: Sync app secrets to Kubernetes
+        run: |
+          echo '${{ secrets.APP_SECRETS }}' | \
+            jq '{apiVersion:"v1",kind:"Secret",metadata:{name:"command-center-secrets",namespace:"command-center"},type:"Opaque",stringData:.}' | \
+            kubectl apply -f -
+
+      - name: Install Kustomize
+        run: |
+          curl -Lo kustomize.tar.gz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz
+          sudo mv kustomize /usr/local/bin/kustomize
+          rm kustomize.tar.gz
+
+      - name: Substitute image tags in deployments
+        run: |
+          OVERLAY=${{ needs.resolve-env.outputs.overlay }}
+          cd infrastructure/k8s/overlays/${OVERLAY}
+
+          kustomize edit set image \
+            api=${{ env.GAR_HOSTNAME }}/${{ env.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/command-center/api:${{ env.IMAGE_TAG }} \
+            web=${{ env.GAR_HOSTNAME }}/${{ env.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/command-center/web:${{ env.IMAGE_TAG }}
+
+      - name: Apply Kubernetes manifests
+        run: |
+          OVERLAY=${{ needs.resolve-env.outputs.overlay }}
+          kustomize build infrastructure/k8s/overlays/${OVERLAY} | kubectl apply -f -
+
+      - name: Wait for rollout
+        run: |
+          for svc in api web; do
+            echo "Waiting for ${svc} rollout..."
+            kubectl rollout status deployment/${svc} \
+              -n command-center \
+              --timeout=300s
+          done
+
+      - name: Verify deployment health
+        run: |
+          echo "=== Pod Status ==="
+          kubectl get pods -n command-center -o wide
+          echo ""
+          echo "=== Service Endpoints ==="
+          kubectl get svc -n command-center

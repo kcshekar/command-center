@@ -1,0 +1,20 @@
+# cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: letsencrypt-staging
+  namespace: command-center
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # Replace with your own email — Let's Encrypt uses it for expiry notices.
+    email: you@example.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-key
+    solvers:
+      - http01:
+          ingress:
+            name: common-ingress-staging # must match ingress.yaml -> metadata.name
+            # class: gce — GKE's managed ingress controller
+
+# EOF
