@@ -1,5 +1,6 @@
 import { tenantRoute } from "../../core/router";
 import { getUploadUrl, getDownloadUrl, deleteObject } from "../../core/storage";
+import { writeAudit } from "../../core/audit";
 import { HttpError } from "../../core/auth";
 
 // Generic across resource types (kb_command today; any future module can
@@ -29,6 +30,12 @@ export const attachmentRoutes = {
         VALUES (${ctx.orgId}, ${resourceType}, ${resourceId}, ${objectKey}, ${filename}, ${contentType}, ${sizeBytes ?? null}, ${ctx.userId})
         RETURNING id, filename, content_type, size_bytes, uploaded_at
       `;
+      await writeAudit(ctx.tx, ctx, {
+        action: "attachment:create",
+        resourceType: "attachment",
+        resourceId: row.id,
+        metadata: { resourceType, resourceId, filename },
+      });
       return Response.json(row, { status: 201 });
     }),
   },
@@ -62,9 +69,15 @@ export const attachmentRoutes = {
   "/api/kb/attachments/:attachmentId": {
     DELETE: tenantRoute(async (req, ctx) => {
       const { attachmentId } = req.params;
-      const [row] = await ctx.tx`DELETE FROM attachments WHERE id = ${attachmentId} RETURNING object_key`;
+      const [row] = await ctx.tx`DELETE FROM attachments WHERE id = ${attachmentId} RETURNING object_key, filename`;
       if (!row) throw new HttpError(404, "not found");
       await deleteObject(row.object_key);
+      await writeAudit(ctx.tx, ctx, {
+        action: "attachment:delete",
+        resourceType: "attachment",
+        resourceId: attachmentId,
+        metadata: { filename: row.filename },
+      });
       return new Response(null, { status: 204 });
     }),
   },

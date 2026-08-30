@@ -1,6 +1,8 @@
 import { sql } from "./db";
 import { hashPassword, revokeAllSessions } from "./auth";
 import { sendEmail } from "./email";
+import { writeAudit } from "./audit";
+import { log } from "./log";
 
 const TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -42,15 +44,16 @@ export async function requestPasswordReset(email: string): Promise<void> {
     // email that fails to send (500) vs. a nonexistent email that returns
     // immediately (200) is exactly the enumeration leak this function
     // exists to prevent — just via status code instead of response body.
-    console.error("password reset email failed to send:", err);
+    log.error("password reset email failed to send", { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
 export async function resetPassword(token: string, newPassword: string): Promise<{ ok: boolean; error?: string }> {
   const tokenHash = await hashToken(token);
   const [row] = await sql`
-    SELECT id, user_id FROM password_reset_tokens
-    WHERE token_hash = ${tokenHash} AND used_at IS NULL AND expires_at > now()
+    SELECT prt.id, prt.user_id, u.org_id FROM password_reset_tokens prt
+    JOIN users u ON u.id = prt.user_id
+    WHERE prt.token_hash = ${tokenHash} AND prt.used_at IS NULL AND prt.expires_at > now()
   `;
   if (!row) return { ok: false, error: "Invalid or expired reset link" };
 
@@ -58,6 +61,9 @@ export async function resetPassword(token: string, newPassword: string): Promise
   await sql.begin(async (tx) => {
     await tx`UPDATE users SET password_hash = ${passwordHash} WHERE id = ${row.user_id}`;
     await tx`UPDATE password_reset_tokens SET used_at = now() WHERE id = ${row.id}`;
+    // No session cookie exists at this point (pre-auth flow) — build a
+    // one-off ctx from the token's own lookup rather than authenticate().
+    await writeAudit(tx, { userId: row.user_id, orgId: row.org_id, role: "member" }, { action: "password:reset", resourceType: "user", resourceId: row.user_id });
   });
   // The old password is dead, so every session established under it should
   // be too — no one is logged in yet at this point, so no token to spare.

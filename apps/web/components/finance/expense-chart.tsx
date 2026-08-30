@@ -4,12 +4,12 @@ import { useMemo, useState } from "react";
 import type { ExpenseSummaryRow } from "@/lib/finance-api";
 import { formatCents } from "@/lib/finance-api";
 
-// Validated dark-mode categorical order from the dataviz skill's reference
-// palette — fixed order, never cycled/reassigned. This app is dark-only
-// (no light/dark toggle), so the dark column is used directly.
+// Validated categorical order from the dataviz skill's reference palette —
+// fixed order, never cycled/reassigned. Chosen to stay legible on both light
+// and dark surfaces; axis/baseline strokes use theme tokens (below) so those
+// adapt with the light/dark toggle even though the segment hues don't.
 const CATEGORICAL_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
-const MUTED = "#898781";
-const BASELINE = "#383835";
+const MUTED = "currentColor";
 
 export function ExpenseChart({ rows }: { rows: ExpenseSummaryRow[] }) {
   const [showTable, setShowTable] = useState(false);
@@ -60,9 +60,9 @@ export function ExpenseChart({ rows }: { rows: ExpenseSummaryRow[] }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto text-muted-foreground">
         <svg width={width} height={chartHeight + 32} role="img" aria-label="Monthly expenses by category">
-          <line x1={0} y1={chartHeight} x2={width} y2={chartHeight} stroke={BASELINE} strokeWidth={1} />
+          <line x1={0} y1={chartHeight} x2={width} y2={chartHeight} stroke="currentColor" strokeOpacity={0.3} strokeWidth={1} />
           {months.map((month, mi) => {
             const catMap = byMonth.get(month) ?? new Map();
             let yOffset = chartHeight;

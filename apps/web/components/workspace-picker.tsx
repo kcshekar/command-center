@@ -12,6 +12,7 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Boxes, Copy, Plus, ShieldAlert } from "lucide-react";
+import { apiErrorMessage } from "@/lib/api";
 
 // Workspaces are shared across Secrets and Password Vault — one workspace,
 // one password, holds both a project's worth of secrets AND vault items.
@@ -67,8 +68,8 @@ export function WorkspacePicker({ title, description, basePath }: { title: strin
       setName("");
       setPassword("");
       setConfirmPassword("");
-    } catch {
-      setError("Failed to create workspace");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Failed to create workspace"));
     } finally {
       setCreating(false);
     }
@@ -134,16 +135,29 @@ export function WorkspacePicker({ title, description, basePath }: { title: strin
         <p className="text-sm text-muted-foreground">No workspaces yet. Create one to get started.</p>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {workspaces.map((w) => (
-            <Link key={w.id} href={`${basePath}/${w.id}`}>
-              <Card className="cursor-pointer transition-colors hover:border-primary/50">
-                <CardHeader className="flex flex-row items-center gap-3">
-                  <Boxes className="size-5 text-muted-foreground" />
-                  <CardTitle className="text-base font-medium">{w.name}</CardTitle>
-                </CardHeader>
-              </Card>
-            </Link>
-          ))}
+          {workspaces.map((w, i) => {
+            const count = basePath === "/vault" ? w.vault_item_count : w.project_count;
+            const countLabel = basePath === "/vault" ? "credential" : "project";
+            return (
+              <Link key={w.id} href={`${basePath}/${w.id}`}>
+                <Card
+                  className="animate-in cursor-pointer fade-in slide-in-from-bottom-2 transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md"
+                  style={{ animationDelay: `${i * 40}ms`, animationFillMode: "backwards" }}
+                >
+                  <CardHeader className="flex flex-row items-center gap-3">
+                    <Boxes className="size-5 text-muted-foreground" />
+                    <div>
+                      <CardTitle className="text-base font-medium">{w.name}</CardTitle>
+                      <p className="text-xs text-muted-foreground">
+                        {count} {countLabel}
+                        {count === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                  </CardHeader>
+                </Card>
+              </Link>
+            );
+          })}
         </div>
       )}
 

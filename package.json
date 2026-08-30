@@ -6,9 +6,14 @@
     "apps/*"
   ],
   "scripts": {
-    "dev:api": "bun run --cwd apps/api dev",
+    "dev": "./scripts/dev.sh",
+    "dev:api": "bun --hot apps/api/index.ts",
     "dev:web": "bun run --cwd apps/web dev",
-    "migrate": "bun run apps/api/migrations/run.ts"
+    "test": "bun test",
+    "typecheck": "bun x tsc --noEmit -p apps/api && bun x tsc --noEmit -p apps/web",
+    "migrate": "bun run apps/api/migrations/run.ts",
+    "db:backup": "./apps/api/scripts/backup-db.sh",
+    "db:restore": "./apps/api/scripts/restore-db.sh"
   },
   "devDependencies": {
     "bun-types": "^1.4.0"

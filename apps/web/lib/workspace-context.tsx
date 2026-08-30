@@ -5,7 +5,9 @@ import { workspaceApi } from "./workspace-api";
 import { ApiError } from "./api";
 import {
   generateSalt,
-  derivePasswordKey,
+  deriveArgon2idPasswordKey,
+  derivePasswordKeyFor,
+  ARGON2ID_PARAMS,
   generateKey,
   generateRecoveryKey,
   importRecoveryKey,
@@ -40,7 +42,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   async function create(name: string, password: string) {
     const salt = generateSalt();
-    const passwordKey = await derivePasswordKey(password, salt);
+    const passwordKey = await deriveArgon2idPasswordKey(password, salt);
     const newWorkspaceKey = await generateKey();
     const { recoveryKey, recoveryKeyString } = await generateRecoveryKey();
     const { wrapped: wrappedByPassword, wrapIv: wrapIvPassword } = await wrapKey(newWorkspaceKey, passwordKey);
@@ -48,7 +50,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
     const workspace = await workspaceApi.create({
       name,
+      kdfAlgorithm: "argon2id",
       kdfSalt: toBase64(salt),
+      kdfIterations: ARGON2ID_PARAMS.t,
+      kdfMemoryKib: ARGON2ID_PARAMS.m,
       wrappedKeyByPassword: wrappedByPassword,
       wrapIvPassword,
       wrappedKeyByRecovery: wrappedByRecovery,
@@ -63,9 +68,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   async function unlock(workspaceId: string, password: string) {
     const km = await workspaceApi.getKeyMaterial(workspaceId);
-    const passwordKey = await derivePasswordKey(password, fromBase64(km.kdfSalt), km.kdfIterations);
+    const algorithm = km.kdfAlgorithm ?? "pbkdf2";
+    // Workspaces still on PBKDF2 get transparently upgraded to Argon2id
+    // right here — needs the unwrapped key extractable just this once, to
+    // re-wrap it under a fresh Argon2id-derived key before use.
+    const needsUpgrade = algorithm === "pbkdf2";
+    const passwordKey = await derivePasswordKeyFor(algorithm, password, fromBase64(km.kdfSalt), km.kdfIterations, km.kdfMemoryKib);
     try {
-      const key = await unwrapKey(km.wrappedKeyByPassword, km.wrapIvPassword, passwordKey);
+      const key = await unwrapKey(km.wrappedKeyByPassword, km.wrapIvPassword, passwordKey, needsUpgrade);
+      if (needsUpgrade) await rewrapAndPersist(workspaceId, key, password);
       setActiveWorkspaceId(workspaceId);
       setActiveWorkspaceName(km.name);
       setWorkspaceKey(key);
@@ -87,7 +98,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   // extractable:true, specifically because they need to re-wrap it.
   async function changePassword(workspaceId: string, currentPassword: string, newPassword: string) {
     const km = await workspaceApi.getKeyMaterial(workspaceId);
-    const currentPasswordKey = await derivePasswordKey(currentPassword, fromBase64(km.kdfSalt), km.kdfIterations);
+    const currentPasswordKey = await derivePasswordKeyFor(
+      km.kdfAlgorithm ?? "pbkdf2",
+      currentPassword,
+      fromBase64(km.kdfSalt),
+      km.kdfIterations,
+      km.kdfMemoryKib
+    );
     let key: CryptoKey;
     try {
       key = await unwrapKey(km.wrappedKeyByPassword, km.wrapIvPassword, currentPasswordKey, true);
@@ -121,12 +138,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return { ok: true };
   }
 
+  // Always (re)wraps under Argon2id — this is the one place a workspace's
+  // password wrapping is written, so change-password, recovery, and the
+  // transparent PBKDF2-upgrade-on-unlock path all move a workspace forward
+  // to the current KDF, never backward.
   async function rewrapAndPersist(workspaceId: string, workspaceKeyMaterial: CryptoKey, newPassword: string) {
     const newSalt = generateSalt();
-    const newPasswordKey = await derivePasswordKey(newPassword, newSalt);
+    const newPasswordKey = await deriveArgon2idPasswordKey(newPassword, newSalt);
     const { wrapped, wrapIv } = await wrapKey(workspaceKeyMaterial, newPasswordKey);
     await workspaceApi.changePassword(workspaceId, {
+      kdfAlgorithm: "argon2id",
       kdfSalt: toBase64(newSalt),
+      kdfIterations: ARGON2ID_PARAMS.t,
+      kdfMemoryKib: ARGON2ID_PARAMS.m,
       wrappedKeyByPassword: wrapped,
       wrapIvPassword: wrapIv,
     });

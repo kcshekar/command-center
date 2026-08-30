@@ -13,6 +13,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Copy, Eye, EyeOff, Pencil, Plus, Settings, Trash2 } from "lucide-react";
+import { Breadcrumb } from "@/components/breadcrumb";
+import { apiErrorMessage } from "@/lib/api";
 
 interface CredentialPayload {
   username: string;
@@ -24,7 +26,7 @@ type DialogMode = "closed" | "create" | "edit";
 
 export default function VaultItemsPage() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
-  const { workspaceKey } = useWorkspace();
+  const { workspaceKey, activeWorkspaceName } = useWorkspace();
   const [items, setItems] = useState<VaultItemSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -77,8 +79,8 @@ export default function VaultItemsPage() {
       setUsername(payload.username);
       setPassword(payload.password);
       setNotes(payload.notes ?? "");
-    } catch {
-      toast.error("Failed to decrypt this item");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Failed to decrypt this item"));
     }
   }
 
@@ -105,8 +107,8 @@ export default function VaultItemsPage() {
       }
       setMode("closed");
       await refresh();
-    } catch {
-      toast.error("Failed to save credential");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Failed to save credential"));
     } finally {
       setSaving(false);
     }
@@ -119,8 +121,8 @@ export default function VaultItemsPage() {
       const dek = await unwrapKey(item.wrappedDek, item.wrapIv, workspaceKey);
       const payload: CredentialPayload = JSON.parse(await decryptData(dek, item.ciphertext, item.iv));
       setRevealed((r) => ({ ...r, [itemId]: payload }));
-    } catch {
-      toast.error("Failed to decrypt this item");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Failed to decrypt this item"));
     }
   }
 
@@ -146,15 +148,18 @@ export default function VaultItemsPage() {
       toast.success("Credential deleted");
       handleHide(itemId);
       await refresh();
-    } catch {
-      toast.error("Failed to delete credential");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Failed to delete credential"));
     }
   }
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">Password Vault</h1>
+        <div>
+          <Breadcrumb items={[{ label: "Password Vault", href: "/vault" }, { label: activeWorkspaceName ?? "Workspace" }]} />
+          <h1 className="mt-1 text-xl font-heading font-semibold tracking-tight">{activeWorkspaceName ?? "Workspace"}</h1>
+        </div>
         <div className="flex items-center gap-2">
           <Link href={`/secrets/${workspaceId}/settings`}>
             <Button variant="outline" size="sm" className="gap-1.5">

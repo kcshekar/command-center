@@ -2,6 +2,7 @@ import type { SQL } from "bun";
 import { authenticate, HttpError, type AuthCtx } from "./auth";
 import { withTenantTx } from "./db";
 import { checkRateLimit } from "./rate-limit";
+import { log } from "./log";
 
 // Wraps a route handler so any thrown HttpError (401/403/etc) becomes the
 // right response, and every module route gets this for free instead of
@@ -14,8 +15,19 @@ export function safe(handler: (req: Request) => Promise<Response>) {
       if (err instanceof HttpError) {
         return Response.json({ error: err.message }, { status: err.status });
       }
-      console.error(err);
-      return Response.json({ error: "internal error" }, { status: 500 });
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("unhandled route error", {
+        method: req.method,
+        path: new URL(req.url).pathname,
+        error: message,
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      // Short diagnostic instead of a bare "internal error" — this is an
+      // internal admin/employee tool, not a public API, so surfacing e.g.
+      // "getaddrinfo ENOTFOUND smtp.example.com" beats an opaque 500 that
+      // sends the user straight to the server logs for something they could
+      // have fixed themselves (bad env var, unreachable host, etc).
+      return Response.json({ error: message.slice(0, 300) || "internal error" }, { status: 500 });
     }
   };
 }

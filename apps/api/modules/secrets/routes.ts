@@ -1,6 +1,7 @@
 import { tenantRoute, rateLimited } from "../../core/router";
 import { writeAudit } from "../../core/audit";
 import { HttpError } from "../../core/auth";
+import { extractKeyValuePairs } from "../../core/ollama";
 
 function b64ToBuf(s: string): Buffer {
   return Buffer.from(s, "base64");
@@ -18,9 +19,13 @@ export const secretsRoutes = {
     GET: tenantRoute(async (req, ctx) => {
       const workspaceId = new URL(req.url).searchParams.get("workspaceId");
       if (!workspaceId) throw new HttpError(400, "workspaceId required");
-      return Response.json(
-        await ctx.tx`SELECT id, name, created_at FROM projects WHERE workspace_id = ${workspaceId} ORDER BY created_at`
-      );
+      return Response.json(await ctx.tx`
+        SELECT p.id, p.name, p.created_at, count(e.id)::int AS environment_count
+        FROM projects p LEFT JOIN environments e ON e.project_id = p.id
+        WHERE p.workspace_id = ${workspaceId}
+        GROUP BY p.id
+        ORDER BY p.created_at
+      `);
     }),
     POST: tenantRoute(async (req, ctx) => {
       const { workspaceId, name, wrappedDek, wrapIv } = await req.json();
@@ -42,7 +47,13 @@ export const secretsRoutes = {
         SELECT id, name, workspace_id, wrapped_dek, wrap_iv, created_at FROM projects WHERE id = ${projectId}
       `;
       if (!project) throw new HttpError(404, "not found");
-      const environments = await ctx.tx`SELECT id, name FROM environments WHERE project_id = ${projectId} ORDER BY name`;
+      const environments = await ctx.tx`
+        SELECT e.id, e.name, count(s.id)::int AS secret_count
+        FROM environments e LEFT JOIN secrets s ON s.environment_id = e.id
+        WHERE e.project_id = ${projectId}
+        GROUP BY e.id
+        ORDER BY e.name
+      `;
       return Response.json({
         id: project.id,
         name: project.name,
@@ -51,6 +62,24 @@ export const secretsRoutes = {
         wrapIv: bufToB64(project.wrap_iv),
         environments,
       });
+    }),
+    PUT: tenantRoute(async (req, ctx) => {
+      const { projectId } = req.params;
+      const { name } = await req.json();
+      if (!name) throw new HttpError(400, "name required");
+      const [row] = await ctx.tx`UPDATE projects SET name = ${name} WHERE id = ${projectId} RETURNING id`;
+      if (!row) throw new HttpError(404, "not found");
+      await writeAudit(ctx.tx, ctx, { action: "project:update", resourceType: "project", resourceId: projectId });
+      return Response.json({ ok: true });
+    }),
+    // Cascades to its environments and secrets (ON DELETE CASCADE) — deleting
+    // a project deletes everything under it, no orphaned rows.
+    DELETE: tenantRoute(async (req, ctx) => {
+      const { projectId } = req.params;
+      const [row] = await ctx.tx`DELETE FROM projects WHERE id = ${projectId} RETURNING id`;
+      if (!row) throw new HttpError(404, "not found");
+      await writeAudit(ctx.tx, ctx, { action: "project:delete", resourceType: "project", resourceId: projectId });
+      return new Response(null, { status: 204 });
     }),
   },
 
@@ -64,7 +93,28 @@ export const secretsRoutes = {
       const [row] = await ctx.tx`
         INSERT INTO environments (project_id, name) VALUES (${projectId}, ${name}) RETURNING id, name
       `;
+      await writeAudit(ctx.tx, ctx, { action: "environment:create", resourceType: "environment", resourceId: row.id });
       return Response.json(row, { status: 201 });
+    }),
+  },
+
+  "/api/secrets/environments/:envId": {
+    PUT: tenantRoute(async (req, ctx) => {
+      const { envId } = req.params;
+      const { name } = await req.json();
+      if (!name) throw new HttpError(400, "name required");
+      const [row] = await ctx.tx`UPDATE environments SET name = ${name} WHERE id = ${envId} RETURNING id`;
+      if (!row) throw new HttpError(404, "not found");
+      await writeAudit(ctx.tx, ctx, { action: "environment:update", resourceType: "environment", resourceId: envId });
+      return Response.json({ ok: true });
+    }),
+    // Cascades to its secrets (ON DELETE CASCADE).
+    DELETE: tenantRoute(async (req, ctx) => {
+      const { envId } = req.params;
+      const [row] = await ctx.tx`DELETE FROM environments WHERE id = ${envId} RETURNING id`;
+      if (!row) throw new HttpError(404, "not found");
+      await writeAudit(ctx.tx, ctx, { action: "environment:delete", resourceType: "environment", resourceId: envId });
+      return new Response(null, { status: 204 });
     }),
   },
 
@@ -112,6 +162,35 @@ export const secretsRoutes = {
     }),
   },
 
+  // Dedicated edit-by-id, distinct from the POST upsert-by-key_label above:
+  // that path can't rename a key (a new key_label just inserts a new row),
+  // this one can — key_label and/or the value can change in place.
+  "/api/secrets/:secretId": {
+    PUT: tenantRoute(async (req, ctx) => {
+      const { secretId } = req.params;
+      const { keyLabel, ciphertext, iv } = await req.json();
+      const [row] = await ctx.tx`
+        UPDATE secrets SET
+          key_label = COALESCE(${keyLabel ?? null}, key_label),
+          ciphertext = COALESCE(${ciphertext ? b64ToBuf(ciphertext) : null}, ciphertext),
+          iv = COALESCE(${iv ? b64ToBuf(iv) : null}, iv),
+          version = version + 1, updated_by = ${ctx.userId}, updated_at = now()
+        WHERE id = ${secretId}
+        RETURNING id, key_label, version
+      `;
+      if (!row) throw new HttpError(404, "not found");
+      await writeAudit(ctx.tx, ctx, { action: "secret:update", resourceType: "secret", resourceId: secretId, metadata: { keyLabel: row.key_label } });
+      return Response.json(row);
+    }),
+    DELETE: tenantRoute(async (req, ctx) => {
+      const { secretId } = req.params;
+      const [row] = await ctx.tx`DELETE FROM secrets WHERE id = ${secretId} RETURNING id, key_label`;
+      if (!row) throw new HttpError(404, "not found");
+      await writeAudit(ctx.tx, ctx, { action: "secret:delete", resourceType: "secret", resourceId: secretId, metadata: { keyLabel: row.key_label } });
+      return new Response(null, { status: 204 });
+    }),
+  },
+
   // Rate-limited per user, not just gated by auth: a stolen session could
   // otherwise script a mass dump of every secret at wire speed. 200/hour is
   // generous for real usage, tight enough to blunt a scripted dump.
@@ -132,6 +211,19 @@ export const secretsRoutes = {
       if (!row) throw new HttpError(404, "not found");
       await writeAudit(ctx.tx, ctx, { action: "secret:copy", resourceType: "secret", resourceId: secretId });
       return new Response(null, { status: 204 });
+    }),
+  },
+
+  // Fallback for the bulk-import dialog: only hit when the pasted/uploaded
+  // text isn't clean JSON or .env syntax (the frontend tries both directly
+  // first). Doesn't touch any project/environment data — just text in,
+  // key-value JSON out — so no RLS-relevant scoping needed here.
+  "/api/secrets/extract": {
+    POST: rateLimited("secret-extract", 20, 3600)(async (req, _ctx) => {
+      const { text } = await req.json();
+      if (!text || typeof text !== "string") throw new HttpError(400, "text required");
+      const pairs = await extractKeyValuePairs(text);
+      return Response.json(pairs);
     }),
   },
 };

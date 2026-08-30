@@ -12,12 +12,19 @@ function getTransport() {
   });
 }
 
-export async function sendEmail(to: string, subject: string, html: string): Promise<void> {
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+}
+
+export async function sendEmail(to: string, subject: string, html: string, attachments?: EmailAttachment[]): Promise<void> {
   const transport = getTransport();
   await transport.sendMail({
     from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
     to,
     subject,
     html,
+    attachments,
   });
 }

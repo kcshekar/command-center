@@ -4,6 +4,13 @@ export class ApiError extends Error {
   }
 }
 
+// The server now sends a short, specific reason instead of a bare "internal
+// error" (see apps/api/core/router.ts) — use it in toasts instead of a
+// generic hardcoded string wherever the underlying cause is worth showing.
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback;
+}
+
 export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...opts,

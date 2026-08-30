@@ -11,20 +11,40 @@ function bufToB64(b: Buffer | Uint8Array): string {
 
 export const workspaceRoutes = {
   "/api/workspaces": {
+    // Both counts are returned regardless of caller (Secrets vs. Vault
+    // share this one workspace picker) — each page just reads the count it
+    // cares about.
     GET: tenantRoute(async (_req, ctx) => {
-      return Response.json(
-        await ctx.tx`SELECT id, name, created_at FROM workspaces WHERE user_id = ${ctx.userId} ORDER BY created_at`
-      );
+      return Response.json(await ctx.tx`
+        SELECT w.id, w.name, w.created_at,
+               count(DISTINCT p.id)::int AS project_count,
+               count(DISTINCT v.id)::int AS vault_item_count
+        FROM workspaces w
+        LEFT JOIN projects p ON p.workspace_id = w.id
+        LEFT JOIN vault_items v ON v.workspace_id = w.id
+        WHERE w.user_id = ${ctx.userId}
+        GROUP BY w.id
+        ORDER BY w.created_at
+      `);
     }),
     POST: tenantRoute(async (req, ctx) => {
-      const { name, kdfSalt, kdfIterations, wrappedKeyByPassword, wrapIvPassword, wrappedKeyByRecovery, wrapIvRecovery } =
-        await req.json();
+      const {
+        name,
+        kdfAlgorithm,
+        kdfSalt,
+        kdfIterations,
+        kdfMemoryKib,
+        wrappedKeyByPassword,
+        wrapIvPassword,
+        wrappedKeyByRecovery,
+        wrapIvRecovery,
+      } = await req.json();
       if (!name || !kdfSalt || !wrappedKeyByPassword || !wrapIvPassword || !wrappedKeyByRecovery || !wrapIvRecovery) {
         throw new HttpError(400, "missing fields");
       }
       const [row] = await ctx.tx`
-        INSERT INTO workspaces (user_id, name, kdf_salt, kdf_iterations, wrapped_key_by_password, wrap_iv_password, wrapped_key_by_recovery, wrap_iv_recovery)
-        VALUES (${ctx.userId}, ${name}, ${b64ToBuf(kdfSalt)}, ${kdfIterations ?? 210000}, ${b64ToBuf(wrappedKeyByPassword)}, ${b64ToBuf(wrapIvPassword)}, ${b64ToBuf(wrappedKeyByRecovery)}, ${b64ToBuf(wrapIvRecovery)})
+        INSERT INTO workspaces (user_id, name, kdf_algorithm, kdf_salt, kdf_iterations, kdf_memory_kib, wrapped_key_by_password, wrap_iv_password, wrapped_key_by_recovery, wrap_iv_recovery)
+        VALUES (${ctx.userId}, ${name}, ${kdfAlgorithm ?? "pbkdf2"}, ${b64ToBuf(kdfSalt)}, ${kdfIterations ?? 210000}, ${kdfMemoryKib ?? null}, ${b64ToBuf(wrappedKeyByPassword)}, ${b64ToBuf(wrapIvPassword)}, ${b64ToBuf(wrappedKeyByRecovery)}, ${b64ToBuf(wrapIvRecovery)})
         RETURNING id, name, created_at
       `;
       await writeAudit(ctx.tx, ctx, { action: "workspace:create", resourceType: "workspace", resourceId: row.id });
@@ -40,15 +60,23 @@ export const workspaceRoutes = {
     GET: tenantRoute(async (req, ctx) => {
       const { workspaceId } = req.params;
       const [row] = await ctx.tx`
-        SELECT id, name, kdf_salt, kdf_iterations, wrapped_key_by_password, wrap_iv_password, wrapped_key_by_recovery, wrap_iv_recovery
+        SELECT id, name, kdf_algorithm, kdf_salt, kdf_iterations, kdf_memory_kib, wrapped_key_by_password, wrap_iv_password, wrapped_key_by_recovery, wrap_iv_recovery
         FROM workspaces WHERE id = ${workspaceId}
       `;
       if (!row) throw new HttpError(404, "not found");
+      // Not rate-limited like secret/vault reveal: this returns the same
+      // wrapped blob regardless of whether the caller's password guess is
+      // right, so throttling it doesn't slow an offline brute force the way
+      // it does for per-secret reveals — but it's still the closest analog
+      // to those endpoints, so it gets the same audit trail.
+      await writeAudit(ctx.tx, ctx, { action: "workspace:key_material_view", resourceType: "workspace", resourceId: workspaceId });
       return Response.json({
         id: row.id,
         name: row.name,
+        kdfAlgorithm: row.kdf_algorithm,
         kdfSalt: bufToB64(row.kdf_salt),
         kdfIterations: row.kdf_iterations,
+        kdfMemoryKib: row.kdf_memory_kib,
         wrappedKeyByPassword: bufToB64(row.wrapped_key_by_password),
         wrapIvPassword: bufToB64(row.wrap_iv_password),
         wrappedKeyByRecovery: bufToB64(row.wrapped_key_by_recovery),
@@ -85,11 +113,12 @@ export const workspaceRoutes = {
   "/api/workspaces/:workspaceId/password": {
     PUT: tenantRoute(async (req, ctx) => {
       const { workspaceId } = req.params;
-      const { kdfSalt, kdfIterations, wrappedKeyByPassword, wrapIvPassword } = await req.json();
+      const { kdfAlgorithm, kdfSalt, kdfIterations, kdfMemoryKib, wrappedKeyByPassword, wrapIvPassword } = await req.json();
       if (!kdfSalt || !wrappedKeyByPassword || !wrapIvPassword) throw new HttpError(400, "missing fields");
       const [row] = await ctx.tx`
         UPDATE workspaces SET
-          kdf_salt = ${b64ToBuf(kdfSalt)}, kdf_iterations = ${kdfIterations ?? 210000},
+          kdf_algorithm = ${kdfAlgorithm ?? "pbkdf2"}, kdf_salt = ${b64ToBuf(kdfSalt)}, kdf_iterations = ${kdfIterations ?? 210000},
+          kdf_memory_kib = ${kdfMemoryKib ?? null},
           wrapped_key_by_password = ${b64ToBuf(wrappedKeyByPassword)}, wrap_iv_password = ${b64ToBuf(wrapIvPassword)}
         WHERE id = ${workspaceId}
         RETURNING id

@@ -1,10 +1,11 @@
-// Zero-knowledge client-side crypto. Native Web Crypto API only — no
-// dependency. Runs in the browser; also runs under Bun (same global
+// Zero-knowledge client-side crypto. Native Web Crypto API for everything
+// except the password KDF (Argon2id, via @noble/hashes — Web Crypto has no
+// native Argon2). Runs in the browser; also runs under Bun (same global
 // crypto.subtle), which is how the *_check.ts scratch scripts exercise it
 // without a browser.
 //
 // Key hierarchy (per Workspace):
-//   master password + salt --PBKDF2-SHA256--> password key (AES-GCM)
+//   master password + salt --Argon2id (or legacy PBKDF2)--> password key (AES-GCM)
 //   random recovery key (shown to user once)  ---------------+
 //                                                             |
 //   both wrap the SAME randomly-generated workspace key <----+
@@ -20,11 +21,17 @@
 // wrapped_key_by_password with the wrong password-derived key fails
 // outright (AES-GCM auth tag mismatch) — that failure IS the validation.
 //
-// ponytail: PBKDF2 not Argon2id — Web Crypto has no native Argon2. Argon2 is
-// stronger against GPU/ASIC attacks; upgrade path is a WASM lib (e.g.
-// libsodium-wrappers) if that threat model matters more than staying
-// dependency-free.
+// Workspaces created before this migration were wrapped with PBKDF2; their
+// kdf_algorithm stays 'pbkdf2' until the next successful unlock, password
+// change, or recovery, at which point they're transparently re-wrapped
+// under Argon2id (see workspace-context.tsx).
+import { argon2idAsync } from "@noble/hashes/argon2.js";
+
 const PBKDF2_ITERATIONS = 210_000;
+export type KdfAlgorithm = "pbkdf2" | "argon2id";
+// OWASP-minimum-recommended Argon2id cost params, sized to stay responsive
+// in pure-JS (no WASM) inside a browser tab.
+export const ARGON2ID_PARAMS = { t: 2, m: 19_456, p: 1 } as const;
 
 function toBase64(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -75,6 +82,30 @@ export async function derivePasswordKey(
     false,
     ["encrypt", "decrypt"]
   );
+}
+
+export async function deriveArgon2idPasswordKey(
+  password: string,
+  salt: Uint8Array,
+  memoryKib: number = ARGON2ID_PARAMS.m,
+  timeCost: number = ARGON2ID_PARAMS.t
+): Promise<CryptoKey> {
+  const raw = await argon2idAsync(password, salt, { t: timeCost, m: memoryKib, p: ARGON2ID_PARAMS.p, dkLen: 32 });
+  return crypto.subtle.importKey("raw", raw as BufferSource, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+// Dispatches to whichever KDF a workspace's stored key material says it was
+// wrapped with — lets unlock/change-password/recovery share one call site
+// regardless of whether that workspace has been upgraded to Argon2id yet.
+export function derivePasswordKeyFor(
+  algorithm: KdfAlgorithm,
+  password: string,
+  salt: Uint8Array,
+  iterations: number,
+  memoryKib: number | null
+): Promise<CryptoKey> {
+  if (algorithm === "argon2id") return deriveArgon2idPasswordKey(password, salt, memoryKib ?? ARGON2ID_PARAMS.m, iterations);
+  return derivePasswordKey(password, salt, iterations);
 }
 
 // A recovery key is high-entropy random bytes used directly as an AES key —

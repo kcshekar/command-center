@@ -129,15 +129,43 @@ export async function authenticate(req: Request): Promise<AuthCtx> {
   return JSON.parse(raw) as AuthCtx;
 }
 
-export async function login(email: string, password: string): Promise<{ token: string; ctx: AuthCtx }> {
+const MFA_PENDING_TTL_SECONDS = 5 * 60;
+
+export type LoginResult = { status: "ok"; token: string; ctx: AuthCtx } | { status: "mfa_required"; mfaToken: string };
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   const rows = await sql`
-    SELECT id, org_id, role, password_hash FROM users WHERE email = ${email}
+    SELECT id, org_id, role, password_hash, mfa_enabled FROM users WHERE email = ${email}
   `;
   const user = rows[0];
   if (!user) throw new HttpError(401, "invalid credentials");
   const ok = await verifyPassword(password, user.password_hash);
   if (!ok) throw new HttpError(401, "invalid credentials");
   const ctx: AuthCtx = { userId: user.id, orgId: user.org_id, role: user.role };
+
+  if (user.mfa_enabled) {
+    // Password verified, but no session yet — the caller has to prove
+    // possession of the second factor first. State lives in Redis only
+    // (mirrors sessions), keyed by a fresh opaque token the client carries
+    // through the second step.
+    const mfaToken = newToken();
+    await redis.set(`mfa-pending:${mfaToken}`, JSON.stringify(ctx), "EX", MFA_PENDING_TTL_SECONDS);
+    return { status: "mfa_required", mfaToken };
+  }
+
+  const token = await createSession(ctx);
+  return { status: "ok", token, ctx };
+}
+
+// Completes the second step of an MFA login: consumes the pending token
+// (single use) and, if the caller's code is valid, returns a real session
+// exactly like a non-MFA login would have.
+export async function completeMfaLogin(mfaToken: string, verify: (ctx: AuthCtx) => Promise<boolean>): Promise<{ token: string; ctx: AuthCtx }> {
+  const raw = await redis.get(`mfa-pending:${mfaToken}`);
+  if (!raw) throw new HttpError(401, "MFA session expired, please log in again");
+  const ctx = JSON.parse(raw) as AuthCtx;
+  if (!(await verify(ctx))) throw new HttpError(401, "invalid code");
+  await redis.del(`mfa-pending:${mfaToken}`);
   const token = await createSession(ctx);
   return { token, ctx };
 }

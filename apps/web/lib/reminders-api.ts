@@ -11,7 +11,7 @@ export interface Reminder {
 
 export const remindersApi = {
   list: (days = 30) => apiFetch<Reminder[]>(`/reminders?days=${days}`),
-  create: (params: { title: string; category: string; dueOn: string; recurrence?: string }) =>
+  create: (params: { title: string; category: string; dueOn: string; recurrence?: string; resourceType?: string; resourceId?: string }) =>
     apiFetch<Reminder>("/reminders", { method: "POST", body: JSON.stringify(params) }),
   update: (id: string, params: { title: string; category: string; dueOn: string; recurrence?: string }) =>
     apiFetch(`/reminders/${id}`, { method: "PUT", body: JSON.stringify(params) }),

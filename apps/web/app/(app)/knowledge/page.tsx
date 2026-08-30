@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Plus, Terminal } from "lucide-react";
+import { apiErrorMessage } from "@/lib/api";
 
 export default function KnowledgeBasePage() {
   const [commands, setCommands] = useState<CommandSummary[]>([]);
@@ -50,8 +51,8 @@ export default function KnowledgeBasePage() {
       setOpen(false);
       toast.success("Command saved");
       await refresh();
-    } catch {
-      toast.error("Failed to save command");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Failed to save command"));
     } finally {
       setSaving(false);
     }
@@ -63,7 +64,7 @@ export default function KnowledgeBasePage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Knowledge Base</h1>
+          <h1 className="text-xl font-heading font-semibold tracking-tight">Knowledge Base</h1>
           <p className="text-sm text-muted-foreground">Commonly used commands, with notes and comments.</p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
@@ -120,9 +121,12 @@ export default function KnowledgeBasePage() {
         <p className="text-sm text-muted-foreground">No commands yet.</p>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {commands.map((c) => (
+          {commands.map((c, i) => (
             <Link key={c.id} href={`/knowledge/${c.id}`}>
-              <Card className="cursor-pointer transition-colors hover:border-primary/50">
+              <Card
+                className="animate-in cursor-pointer fade-in slide-in-from-bottom-2 transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md"
+                style={{ animationDelay: `${i * 40}ms`, animationFillMode: "backwards" }}
+              >
                 <CardHeader className="flex flex-row items-start gap-3">
                   <Terminal className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
                   <div className="flex min-w-0 flex-col gap-1">

@@ -1,0 +1,22 @@
+# Runs the api+web containers against your existing Postgres/Redis (whatever
+# DATABASE_URL/REDIS_URL in .env point to — this doesn't spin up its own
+# database, matching how dev already works outside Docker).
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file: .env
+    ports:
+      - "3001:3001"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      API_ORIGIN: http://api:3001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api

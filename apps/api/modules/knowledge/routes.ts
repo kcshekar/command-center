@@ -1,4 +1,5 @@
 import { tenantRoute } from "../../core/router";
+import { writeAudit } from "../../core/audit";
 import { HttpError } from "../../core/auth";
 
 export const knowledgeRoutes = {
@@ -18,6 +19,7 @@ export const knowledgeRoutes = {
         VALUES (${ctx.orgId}, ${title}, ${commandText}, ${context ?? null}, ${notes ?? null}, ${ctx.userId})
         RETURNING id, title, command_text, context, notes, created_at
       `;
+      await writeAudit(ctx.tx, ctx, { action: "kb_command:create", resourceType: "kb_command", resourceId: row.id });
       return Response.json(row, { status: 201 });
     }),
   },
@@ -47,12 +49,14 @@ export const knowledgeRoutes = {
         RETURNING id
       `;
       if (!row) throw new HttpError(404, "not found");
+      await writeAudit(ctx.tx, ctx, { action: "kb_command:update", resourceType: "kb_command", resourceId: commandId });
       return Response.json({ ok: true });
     }),
     DELETE: tenantRoute(async (req, ctx) => {
       const { commandId } = req.params;
       const [row] = await ctx.tx`DELETE FROM kb_commands WHERE id = ${commandId} RETURNING id`;
       if (!row) throw new HttpError(404, "not found");
+      await writeAudit(ctx.tx, ctx, { action: "kb_command:delete", resourceType: "kb_command", resourceId: commandId });
       return new Response(null, { status: 204 });
     }),
   },
@@ -69,6 +73,7 @@ export const knowledgeRoutes = {
         VALUES (${ctx.orgId}, ${commandId}, ${ctx.userId}, ${body})
         RETURNING id, body, created_at
       `;
+      await writeAudit(ctx.tx, ctx, { action: "kb_comment:create", resourceType: "kb_comment", resourceId: row.id, metadata: { commandId } });
       return Response.json(row, { status: 201 });
     }),
   },
