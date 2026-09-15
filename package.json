@@ -6,8 +6,8 @@
     "apps/*"
   ],
   "scripts": {
-    "start:api": "API_PORT=3011 bun --env-file=.env apps/api/index.ts",
-    "start:web": "PORT=3010 API_ORIGIN=http://localhost:3011 bun apps/web/.next/standalone/apps/web/server.js",
+    "start:cc_api": "API_PORT=3011 bun --env-file=.env apps/api/index.ts",
+    "start:cc_web": "PORT=3010 API_ORIGIN=http://localhost:3011 bun apps/web/.next/standalone/apps/web/server.js",
     "dev": "./scripts/dev.sh",
     "dev:api": "bun --hot apps/api/index.ts",
     "dev:web": "bun run --cwd apps/web dev",
