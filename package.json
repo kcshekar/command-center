@@ -15,7 +15,8 @@
     "typecheck": "bun x tsc --noEmit -p apps/api && bun x tsc --noEmit -p apps/web",
     "migrate": "bun run apps/api/migrations/run.ts",
     "db:backup": "./apps/api/scripts/backup-db.sh",
-    "db:restore": "./apps/api/scripts/restore-db.sh"
+    "db:restore": "./apps/api/scripts/restore-db.sh",
+    "build:web": "API_ORIGIN=http://localhost:3011 bun run --cwd apps/web build && rm -rf apps/web/.next/standalone/apps/web/.next/static apps/web/.next/standalone/apps/web/public && cp -r apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static && cp -r apps/web/public apps/web/.next/standalone/apps/web/public"
   },
   "devDependencies": {
     "bun-types": "^1.4.0"
