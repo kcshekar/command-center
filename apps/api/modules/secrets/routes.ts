@@ -124,7 +124,7 @@ export const secretsRoutes = {
       const [env] = await ctx.tx`SELECT id FROM environments WHERE id = ${envId}`;
       if (!env) throw new HttpError(404, "not found");
       const rows = await ctx.tx`
-        SELECT id, key_label, ciphertext, iv, version, updated_at
+        SELECT id, key_label, ciphertext, iv, note_ciphertext, note_iv, version, updated_at
         FROM secrets WHERE environment_id = ${envId} ORDER BY key_label
       `;
       return Response.json(
@@ -133,6 +133,8 @@ export const secretsRoutes = {
           keyLabel: r.key_label,
           ciphertext: bufToB64(r.ciphertext),
           iv: bufToB64(r.iv),
+          noteCiphertext: r.note_ciphertext ? bufToB64(r.note_ciphertext) : null,
+          noteIv: r.note_iv ? bufToB64(r.note_iv) : null,
           version: r.version,
           updatedAt: r.updated_at,
         }))
@@ -142,13 +144,16 @@ export const secretsRoutes = {
       const { envId } = req.params;
       const [env] = await ctx.tx`SELECT id FROM environments WHERE id = ${envId}`;
       if (!env) throw new HttpError(404, "not found");
-      const { keyLabel, ciphertext, iv } = await req.json();
+      const { keyLabel, ciphertext, iv, noteCiphertext, noteIv } = await req.json();
       if (!keyLabel || !ciphertext || !iv) throw new HttpError(400, "missing fields");
       const [row] = await ctx.tx`
-        INSERT INTO secrets (environment_id, key_label, ciphertext, iv, updated_by)
-        VALUES (${envId}, ${keyLabel}, ${b64ToBuf(ciphertext)}, ${b64ToBuf(iv)}, ${ctx.userId})
+        INSERT INTO secrets (environment_id, key_label, ciphertext, iv, note_ciphertext, note_iv, updated_by)
+        VALUES (${envId}, ${keyLabel}, ${b64ToBuf(ciphertext)}, ${b64ToBuf(iv)},
+                ${noteCiphertext ? b64ToBuf(noteCiphertext) : null}, ${noteIv ? b64ToBuf(noteIv) : null},
+                ${ctx.userId})
         ON CONFLICT (environment_id, key_label) DO UPDATE SET
           ciphertext = EXCLUDED.ciphertext, iv = EXCLUDED.iv,
+          note_ciphertext = EXCLUDED.note_ciphertext, note_iv = EXCLUDED.note_iv,
           version = secrets.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
         RETURNING id, key_label, version
       `;
@@ -168,12 +173,17 @@ export const secretsRoutes = {
   "/api/secrets/:secretId": {
     PUT: tenantRoute(async (req, ctx) => {
       const { secretId } = req.params;
-      const { keyLabel, ciphertext, iv } = await req.json();
+      // note_ciphertext/note_iv are always written when the client sends them
+      // (client always includes on edit; null means "clear the note"). Value
+      // fields keep the existing "omit to leave alone" semantics.
+      const { keyLabel, ciphertext, iv, noteCiphertext, noteIv } = await req.json();
       const [row] = await ctx.tx`
         UPDATE secrets SET
           key_label = COALESCE(${keyLabel ?? null}, key_label),
           ciphertext = COALESCE(${ciphertext ? b64ToBuf(ciphertext) : null}, ciphertext),
           iv = COALESCE(${iv ? b64ToBuf(iv) : null}, iv),
+          note_ciphertext = ${noteCiphertext ? b64ToBuf(noteCiphertext) : null},
+          note_iv = ${noteIv ? b64ToBuf(noteIv) : null},
           version = version + 1, updated_by = ${ctx.userId}, updated_at = now()
         WHERE id = ${secretId}
         RETURNING id, key_label, version

@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Copy, Eye, EyeOff, Pencil, Plus, Trash2, Upload, Wand2 } from "lucide-react";
+import { Copy, Download, Eye, EyeOff, Pencil, Plus, Trash2, Upload, Wand2 } from "lucide-react";
 import { Breadcrumb } from "@/components/breadcrumb";
 import { apiErrorMessage } from "@/lib/api";
 import { parseKeyValueText } from "@/lib/kv-parse";
@@ -20,6 +20,20 @@ interface ImportRow {
   key: string;
   value: string;
   include: boolean;
+}
+
+function formatExport(rows: Array<{ key: string; value: string; note?: string }>, fmt: "env" | "json"): string {
+  if (fmt === "json") {
+    return JSON.stringify(Object.fromEntries(rows.map((r) => [r.key, r.value])), null, 2);
+  }
+  const needsQuoting = /[\s"'#`$\\]/;
+  return rows
+    .map((r) => {
+      const quoted = needsQuoting.test(r.value) ? `"${r.value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : r.value;
+      const noteLine = r.note ? `# ${r.note.replace(/\n/g, " ")}\n` : "";
+      return `${noteLine}${r.key}=${quoted}`;
+    })
+    .join("\n") + "\n";
 }
 
 export default function EnvironmentSecretsPage() {
@@ -35,6 +49,8 @@ export default function EnvironmentSecretsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [keyLabel, setKeyLabel] = useState("");
   const [value, setValue] = useState("");
+  const [note, setNote] = useState("");
+  const [notes, setNotes] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -45,9 +61,30 @@ export default function EnvironmentSecretsPage() {
   const [extracting, setExtracting] = useState(false);
   const [importing, setImporting] = useState(false);
 
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"env" | "json">("env");
+  const [exportText, setExportText] = useState("");
+  const [exporting, setExporting] = useState(false);
+
   const refreshSecrets = useCallback(async () => {
-    setSecrets(await secretsApi.listSecrets(envId));
-  }, [envId]);
+    const rows = await secretsApi.listSecrets(envId);
+    setSecrets(rows);
+    // Decrypt notes silently (they're metadata, not the value — no audit).
+    // If dek isn't ready yet, the follow-up effect below re-runs this branch.
+    if (dek) {
+      const decrypted: Record<string, string> = {};
+      for (const r of rows) {
+        if (r.noteCiphertext && r.noteIv) {
+          try {
+            decrypted[r.id] = await decryptData(dek, r.noteCiphertext, r.noteIv);
+          } catch {
+            // one bad note shouldn't blank the whole page
+          }
+        }
+      }
+      setNotes(decrypted);
+    }
+  }, [envId, dek]);
 
   useEffect(() => {
     (async () => {
@@ -109,6 +146,7 @@ export default function EnvironmentSecretsPage() {
     setEditingId(null);
     setKeyLabel("");
     setValue("");
+    setNote("");
     setOpen(true);
   }
 
@@ -116,6 +154,7 @@ export default function EnvironmentSecretsPage() {
     setEditingId(s.id);
     setKeyLabel(s.keyLabel);
     setValue("");
+    setNote(notes[s.id] ?? "");
     setOpen(true);
   }
 
@@ -124,12 +163,16 @@ export default function EnvironmentSecretsPage() {
     if (!editingId && !value) return;
     setSaving(true);
     try {
+      // Notes are always sent (even empty → null) so edit can clear one.
+      const encryptedNote = note.trim() ? await encryptData(dek, note) : null;
       if (editingId) {
         const encrypted = value ? await encryptData(dek, value) : null;
         await secretsApi.updateSecret(editingId, {
           keyLabel: keyLabel.trim(),
           ciphertext: encrypted?.ciphertext,
           iv: encrypted?.iv,
+          noteCiphertext: encryptedNote?.ciphertext ?? null,
+          noteIv: encryptedNote?.iv ?? null,
         });
         // The cached plaintext in `revealed` is now stale if the value
         // changed — drop it so the row goes back to masked until re-revealed,
@@ -138,7 +181,13 @@ export default function EnvironmentSecretsPage() {
         toast.success("Secret updated");
       } else {
         const { ciphertext, iv } = await encryptData(dek, value);
-        await secretsApi.upsertSecret(envId, keyLabel.trim(), ciphertext, iv);
+        await secretsApi.upsertSecret(envId, {
+          keyLabel: keyLabel.trim(),
+          ciphertext,
+          iv,
+          noteCiphertext: encryptedNote?.ciphertext ?? null,
+          noteIv: encryptedNote?.iv ?? null,
+        });
         toast.success("Secret saved");
       }
       setOpen(false);
@@ -207,7 +256,7 @@ export default function EnvironmentSecretsPage() {
     try {
       for (const row of rows) {
         const { ciphertext, iv } = await encryptData(dek, row.value);
-        await secretsApi.upsertSecret(envId, row.key.trim(), ciphertext, iv);
+        await secretsApi.upsertSecret(envId, { keyLabel: row.key.trim(), ciphertext, iv });
       }
       toast.success(`Imported ${rows.length} secret${rows.length === 1 ? "" : "s"}`);
       setImportOpen(false);
@@ -217,6 +266,55 @@ export default function EnvironmentSecretsPage() {
     } finally {
       setImporting(false);
     }
+  }
+
+  async function decryptAllForExport(): Promise<Array<{ key: string; value: string; note?: string }>> {
+    if (!dek) return [];
+    const rows: Array<{ key: string; value: string; note?: string }> = [];
+    for (const s of secrets) {
+      try {
+        rows.push({ key: s.keyLabel, value: await decryptData(dek, s.ciphertext, s.iv), note: notes[s.id] || undefined });
+      } catch {
+        // skip broken rows rather than aborting the file
+      }
+    }
+    return rows;
+  }
+
+  async function openExport() {
+    if (!dek) return;
+    setExporting(true);
+    setExportOpen(true);
+    try {
+      setExportText(formatExport(await decryptAllForExport(), exportFormat));
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Failed to build export"));
+      setExportOpen(false);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function reformatExport(fmt: "env" | "json") {
+    setExportFormat(fmt);
+    setExportText(formatExport(await decryptAllForExport(), fmt));
+  }
+
+  function handleDownloadExport() {
+    const filename = exportFormat === "env" ? `${envName}.env` : `${envName}.json`;
+    const mime = exportFormat === "env" ? "text/plain" : "application/json";
+    const blob = new Blob([exportText], { type: `${mime};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleCopyExport() {
+    await navigator.clipboard.writeText(exportText);
+    toast.success("Copied to clipboard");
   }
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -245,6 +343,43 @@ export default function EnvironmentSecretsPage() {
           <h1 className="mt-1 text-xl font-heading font-semibold tracking-tight">{envName}</h1>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={openExport} disabled={secrets.length === 0}>
+            <Download className="size-4" /> Export
+          </Button>
+          <Dialog open={exportOpen} onOpenChange={setExportOpen}>
+            <DialogContent className="sm:max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Export as .env or JSON</DialogTitle>
+              </DialogHeader>
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-2 text-sm">
+                  <Label>Format</Label>
+                  <select
+                    value={exportFormat}
+                    onChange={(e) => reformatExport(e.target.value as "env" | "json")}
+                    className="h-8 rounded-md border bg-transparent px-2 text-sm"
+                  >
+                    <option value="env">.env</option>
+                    <option value="json">JSON</option>
+                  </select>
+                </div>
+                <textarea
+                  value={exporting ? "Decrypting…" : exportText}
+                  readOnly
+                  rows={12}
+                  className="rounded-md border bg-transparent px-3 py-2 font-mono text-xs"
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={handleCopyExport} disabled={exporting || !exportText}>
+                  <Copy className="size-4" /> Copy
+                </Button>
+                <Button onClick={handleDownloadExport} disabled={exporting || !exportText}>
+                  <Download className="size-4" /> Download
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={openImport}>
             <Upload className="size-4" /> Import
           </Button>
@@ -350,6 +485,17 @@ export default function EnvironmentSecretsPage() {
                     className="font-mono"
                   />
                 </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="secret-note">Note (optional)</Label>
+                  <textarea
+                    id="secret-note"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    rows={2}
+                    placeholder="Where this is used, rotation policy, etc."
+                    className="rounded-md border bg-transparent px-3 py-2 text-sm"
+                  />
+                </div>
               </div>
               <DialogFooter>
                 <Button onClick={handleSave} disabled={saving || !keyLabel.trim() || (!editingId && !value)}>
@@ -375,7 +521,12 @@ export default function EnvironmentSecretsPage() {
           <TableBody>
             {secrets.map((s) => (
               <TableRow key={s.id}>
-                <TableCell className="font-mono text-sm">{s.keyLabel}</TableCell>
+                <TableCell className="font-mono text-sm">
+                  {s.keyLabel}
+                  {notes[s.id] && (
+                    <div className="mt-0.5 font-sans text-xs font-normal text-muted-foreground">{notes[s.id]}</div>
+                  )}
+                </TableCell>
                 <TableCell className="font-mono text-sm text-muted-foreground break-all">
                   {revealed[s.id] ?? "••••••••••••"}
                 </TableCell>

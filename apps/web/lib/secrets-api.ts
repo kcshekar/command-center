@@ -19,6 +19,8 @@ export interface SecretItem {
   keyLabel: string;
   ciphertext: string;
   iv: string;
+  noteCiphertext: string | null;
+  noteIv: string | null;
   version: number;
   updatedAt: string;
 }
@@ -43,13 +45,18 @@ export const secretsApi = {
   deleteEnvironment: (envId: string) => apiFetch(`/secrets/environments/${envId}`, { method: "DELETE" }),
 
   listSecrets: (envId: string) => apiFetch<SecretItem[]>(`/secrets/environments/${envId}/secrets`),
-  upsertSecret: (envId: string, keyLabel: string, ciphertext: string, iv: string) =>
+  upsertSecret: (
+    envId: string,
+    params: { keyLabel: string; ciphertext: string; iv: string; noteCiphertext?: string | null; noteIv?: string | null }
+  ) =>
     apiFetch(`/secrets/environments/${envId}/secrets`, {
       method: "POST",
-      body: JSON.stringify({ keyLabel, ciphertext, iv }),
+      body: JSON.stringify(params),
     }),
-  updateSecret: (secretId: string, params: { keyLabel?: string; ciphertext?: string; iv?: string }) =>
-    apiFetch(`/secrets/${secretId}`, { method: "PUT", body: JSON.stringify(params) }),
+  updateSecret: (
+    secretId: string,
+    params: { keyLabel?: string; ciphertext?: string; iv?: string; noteCiphertext?: string | null; noteIv?: string | null }
+  ) => apiFetch(`/secrets/${secretId}`, { method: "PUT", body: JSON.stringify(params) }),
   deleteSecret: (secretId: string) => apiFetch(`/secrets/${secretId}`, { method: "DELETE" }),
 
   reveal: (secretId: string) => apiFetch<{ ciphertext: string; iv: string }>(`/secrets/${secretId}/reveal`, { method: "POST" }),
