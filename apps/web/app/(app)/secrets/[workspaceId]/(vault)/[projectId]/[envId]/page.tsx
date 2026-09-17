@@ -67,24 +67,30 @@ export default function EnvironmentSecretsPage() {
   const [exporting, setExporting] = useState(false);
 
   const refreshSecrets = useCallback(async () => {
-    const rows = await secretsApi.listSecrets(envId);
-    setSecrets(rows);
-    // Decrypt notes silently (they're metadata, not the value — no audit).
-    // If dek isn't ready yet, the follow-up effect below re-runs this branch.
-    if (dek) {
+    setSecrets(await secretsApi.listSecrets(envId));
+  }, [envId]);
+
+  // Notes decrypt as derived state — fires when dek arrives OR secrets change.
+  // Kept out of refreshSecrets so that callback stays stable and doesn't retrigger
+  // the parent effect (which would loop, since unwrapKey yields a new CryptoKey each run).
+  useEffect(() => {
+    if (!dek) return;
+    let cancelled = false;
+    (async () => {
       const decrypted: Record<string, string> = {};
-      for (const r of rows) {
+      for (const r of secrets) {
         if (r.noteCiphertext && r.noteIv) {
           try {
             decrypted[r.id] = await decryptData(dek, r.noteCiphertext, r.noteIv);
-          } catch {
-            // one bad note shouldn't blank the whole page
-          }
+          } catch {}
         }
       }
-      setNotes(decrypted);
-    }
-  }, [envId, dek]);
+      if (!cancelled) setNotes(decrypted);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [dek, secrets]);
 
   useEffect(() => {
     (async () => {
