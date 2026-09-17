@@ -82,7 +82,14 @@ export default function KnowledgeBasePage() {
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="kb-command">Command</Label>
-                <Input id="kb-command" value={commandText} onChange={(e) => setCommandText(e.target.value)} placeholder="git reset --soft HEAD~1" className="font-mono" />
+                <textarea
+                  id="kb-command"
+                  value={commandText}
+                  onChange={(e) => setCommandText(e.target.value)}
+                  placeholder={"git reset --soft HEAD~1\n# or paste a multi-line snippet"}
+                  rows={4}
+                  className="rounded-md border bg-transparent px-3 py-2 font-mono text-sm whitespace-pre"
+                />
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="kb-context">Context</Label>
