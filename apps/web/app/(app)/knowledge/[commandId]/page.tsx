@@ -158,8 +158,8 @@ export default function CommandDetailPage() {
           </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="flex items-center gap-2 rounded-md border bg-muted/50 p-3">
-            <code className="flex-1 break-all font-mono text-sm">{command.command_text}</code>
+          <div className="flex items-start gap-2 rounded-md border bg-muted/50 p-3">
+            <code className="flex-1 font-mono text-sm break-all whitespace-pre-wrap">{command.command_text}</code>
             <Button variant="ghost" size="icon" onClick={handleCopy} aria-label="Copy command">
               <Copy className="size-4" />
             </Button>
@@ -247,7 +247,13 @@ export default function CommandDetailPage() {
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="edit-kb-command">Command</Label>
-              <Input id="edit-kb-command" value={editCommandText} onChange={(e) => setEditCommandText(e.target.value)} className="font-mono" />
+              <textarea
+                id="edit-kb-command"
+                value={editCommandText}
+                onChange={(e) => setEditCommandText(e.target.value)}
+                rows={4}
+                className="rounded-md border bg-transparent px-3 py-2 font-mono text-sm whitespace-pre"
+              />
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="edit-kb-context">Context</Label>
