@@ -1,0 +1,35 @@
+{
+  "name": "automations-worker",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node --env-file=.env dist/worker.js",
+    "worker": "tsx watch --env-file=.env src/worker.ts",
+    "bootstrap": "tsx --env-file=.env src/scripts/bootstrap.ts",
+    "migrate": "tsx --env-file=.env src/scripts/migrate.ts",
+    "google:auth": "tsx --env-file=.env src/scripts/authorize-google.ts",
+    "schedules:init": "tsx --env-file=.env src/scripts/init-schedules.ts",
+    "schedules:delete": "tsx --env-file=.env src/scripts/delete-schedule.ts",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@temporalio/activity": "^1.11.0",
+    "@temporalio/client": "^1.11.0",
+    "@temporalio/worker": "^1.11.0",
+    "@temporalio/workflow": "^1.11.0",
+    "dotenv": "^18.0.5",
+    "googleapis": "^144.0.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,6 +1,7 @@
 import type { SQL } from "bun";
 import { authenticate, HttpError, type AuthCtx } from "./auth";
 import { withTenantTx } from "./db";
+import { authenticateServiceToken, type ServiceTokenCtx } from "./service-token";
 import { checkRateLimit } from "./rate-limit";
 import { log } from "./log";
 
@@ -41,6 +42,18 @@ export function tenantRoute(
 ) {
   return safe(async (req: Request) => {
     const ctx = await authenticate(req);
+    return withTenantTx(ctx, (tx) => handler(req as any, { ...ctx, tx }));
+  });
+}
+
+// Same shape as tenantRoute but authenticates via Bearer service token
+// instead of a session cookie. Handler receives a ServiceTokenCtx so scope
+// checks (requireScope) are available.
+export function serviceTokenRoute(
+  handler: (req: Request & { params: Record<string, string> }, ctx: ServiceTokenCtx & { tx: SQL }) => Promise<Response>
+) {
+  return safe(async (req: Request) => {
+    const ctx = await authenticateServiceToken(req);
     return withTenantTx(ctx, (tx) => handler(req as any, { ...ctx, tx }));
   });
 }

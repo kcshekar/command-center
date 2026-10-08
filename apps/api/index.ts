@@ -16,6 +16,9 @@ import { financeRoutes } from "./modules/finance/routes";
 import { reminderRoutes, startReminderSweepInterval } from "./modules/reminders/routes";
 import { recommendRoutes } from "./modules/finance/recommend";
 import { auditRoutes } from "./modules/audit/routes";
+import { slackRoutes } from "./modules/slack/routes";
+import { serviceTokenRoutes } from "./modules/service-tokens/routes";
+import { integrationRoutes } from "./modules/integrations/routes";
 
 const port = Number(process.env.API_PORT ?? 3001);
 
@@ -226,9 +229,35 @@ Bun.serve({
     ...reminderRoutes,
     ...recommendRoutes,
     ...auditRoutes,
+    ...slackRoutes,
+    ...serviceTokenRoutes,
+    ...integrationRoutes,
   },
 });
 
 startReminderSweepInterval();
+
+// Fire-and-forget: bring up Socket Mode connections for every active bot
+// that has an app token. Failure logs but doesn't crash the API — the rest
+// of the app keeps working even if Slack is down.
+import("./core/slack-socket").then(async (m) => {
+  await m.startSlackSockets();
+  // P1 #5: if any active bot has an app token (i.e. Socket Mode is running
+  // for real), warn loudly when the worker callback route isn't configured.
+  // Silent misconfig means every button click looks fine to the user but
+  // dies inside a log line. Not fatal — read-only bots don't need the callback.
+  const [row] = await sql`
+    SELECT count(*)::int AS n FROM slack_connections
+    WHERE status = 'active' AND encrypted_app_token IS NOT NULL
+  `;
+  if ((row?.n ?? 0) > 0 && (!process.env.WORKER_CALLBACK_URL || !process.env.WORKER_CALLBACK_TOKEN)) {
+    console.warn(
+      "WARNING: Slack app tokens are configured but WORKER_CALLBACK_URL / WORKER_CALLBACK_TOKEN are not set. " +
+        "Button clicks will be received but cannot be dispatched to the Automations Worker."
+    );
+  }
+}).catch((err) => {
+  console.error("slack sockets failed to start", err);
+});
 
 console.log(`api listening on :${port}`);

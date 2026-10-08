@@ -52,7 +52,7 @@ async function sweepDueReminders(tx: SQL, orgId: string): Promise<number> {
     WHERE due_on <= CURRENT_DATE AND (notified_at IS NULL OR notified_at::date < CURRENT_DATE)
   `;
   for (const r of due) {
-    await sendSlackMessage(`:bell: Reminder due: *${r.title}* (due ${r.due_on})`);
+    await sendSlackMessage(`:bell: Reminder due: *${r.title}* (due ${r.due_on})`, { routeKey: "reminders.due", tx, orgId });
     await tx`UPDATE reminders SET notified_at = now() WHERE id = ${r.id}`;
   }
   return due.length;
