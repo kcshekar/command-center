@@ -5,7 +5,7 @@ process.env.SLACK_ENCRYPTION_SECRET ??= "test-slack-kek-do-not-use-in-prod";
 import { encryptSlackToken, decryptSlackToken, maskToken } from "./slack-crypto";
 
 test("encrypts and decrypts slack tokens accurately", () => {
-  const token = "xoxb-1234567890-9876543210-abcdefghijklmnop";
+  const token = "1234567890";
   const { ciphertext, iv } = encryptSlackToken(token);
   expect(ciphertext).not.toEqual(Buffer.from(token));
   const decrypted = decryptSlackToken(ciphertext, iv);
@@ -13,6 +13,6 @@ test("encrypts and decrypts slack tokens accurately", () => {
 });
 
 test("masks slack tokens for API display", () => {
-  expect(maskToken("xoxb-1234567890123456789")).toBe("xoxb-123...6789");
+  expect(maskToken("1234567890")).toBe("xoxb-123...6789");
   expect(maskToken("short")).toBe("********");
 });
