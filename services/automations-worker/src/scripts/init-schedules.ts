@@ -5,8 +5,9 @@ import { Client, Connection, ScheduleOverlapPolicy } from "@temporalio/client";
 
 async function main() {
   const userEmail = process.argv[2];
+  const skipTriage = process.argv.includes("--skip-triage");
   if (!userEmail) {
-    console.error("usage: npm run schedules:init -- <user@gmail.com>");
+    console.error("usage: pnpm schedules:init -- <user@gmail.com> [--skip-triage]");
     process.exit(1);
   }
 
@@ -44,14 +45,18 @@ async function main() {
   // P1 #6: polling replacement for the unbuilt Gmail push subscription.
   // 15-min cadence keeps unread noise manageable without hammering Google.
   // SKIP overlap keeps a slow LLM classification from stacking runs.
-  await upsertSchedule(client, {
-    scheduleId: "inbox-triage-every-15m",
-    cron: "*/15 * * * *",
-    workflowType: "inboxTriageWorkflow",
-    args: [{ userEmail, digestRouteKey: digest, approvalRouteKey: approval }],
-    taskQueue,
-    policies: commonPolicies,
-  });
+  if (!skipTriage) {
+    await upsertSchedule(client, {
+      scheduleId: "inbox-triage-every-15m",
+      cron: "*/15 * * * *",
+      workflowType: "inboxTriageWorkflow",
+      args: [{ userEmail, digestRouteKey: digest, approvalRouteKey: approval }],
+      taskQueue,
+      policies: commonPolicies,
+    });
+  } else {
+    console.log("skipping inbox-triage-every-15m schedule (--skip-triage)");
+  }
 
   await connection.close();
 }

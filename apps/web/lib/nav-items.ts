@@ -10,5 +10,5 @@ export const NAV_ITEMS = [
   { href: "/reminders", label: "Reminders", icon: BellRing },
   { href: "/slack", label: "Slack Bots", icon: Bot },
   { href: "/tokens", label: "Service Tokens", icon: Key },
-  { href: "/automations", label: "Automations", icon: Zap },
+  { href: "/agent-automations", label: "Automations", icon: Zap },
 ];
