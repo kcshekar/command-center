@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Bot, CheckCircle2, AlertCircle, Plus, RefreshCw, Trash2, ArrowRight, ShieldCheck, Zap, ToggleLeft, ToggleRight } from "lucide-react";
+import { Bot, CheckCircle2, AlertCircle, Plus, RefreshCw, Trash2, ArrowRight, ShieldCheck, Zap, ToggleLeft, ToggleRight, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiErrorMessage } from "@/lib/api";
 
@@ -40,6 +40,7 @@ export default function SlackSettingsPage() {
 
   // Route modal state
   const [routeOpen, setRouteOpen] = useState(false);
+  const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
   const [routeKey, setRouteKey] = useState("reminders.due");
   const [routeConnId, setRouteConnId] = useState("");
   const [channelId, setChannelId] = useState("");
@@ -162,12 +163,24 @@ export default function SlackSettingsPage() {
   }
 
   function openCreateRoute() {
+    setEditingRouteId(null);
     setRouteKey("reminders.due");
     setRouteConnId(connections[0]?.id ?? "");
     setChannelId("");
     setChannelName("");
     setAllowButtons(false);
     setApproverIds("");
+    setRouteOpen(true);
+  }
+
+  function openEditRoute(r: SlackRoute) {
+    setEditingRouteId(r.id);
+    setRouteKey(r.route_key);
+    setRouteConnId(r.connection_id);
+    setChannelId(r.channel_id);
+    setChannelName(r.channel_name ?? "");
+    setAllowButtons(r.allow_buttons);
+    setApproverIds((r.allowed_approver_slack_ids ?? []).join(", "));
     setRouteOpen(true);
   }
 
@@ -362,9 +375,14 @@ export default function SlackSettingsPage() {
                           )}
                         </td>
                         <td className="p-3 text-right">
-                          <Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={() => handleDeleteRoute(r.id)}>
-                            <Trash2 className="size-3.5" />
-                          </Button>
+                          <div className="flex justify-end gap-1">
+                            <Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-foreground" onClick={() => openEditRoute(r)} aria-label="Edit route">
+                              <Pencil className="size-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={() => handleDeleteRoute(r.id)} aria-label="Delete route">
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -421,7 +439,7 @@ export default function SlackSettingsPage() {
       <Dialog open={routeOpen} onOpenChange={setRouteOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Add / Edit Route Mapping</DialogTitle>
+            <DialogTitle>{editingRouteId ? "Edit Route Mapping" : "Add Route Mapping"}</DialogTitle>
           </DialogHeader>
           <div className="flex min-w-0 flex-col gap-4 py-2">
             <div className="flex min-w-0 flex-col gap-1.5">
@@ -430,7 +448,8 @@ export default function SlackSettingsPage() {
                 id="route-key"
                 value={routeKey}
                 onChange={(e) => setRouteKey(e.target.value)}
-                className="h-9 w-full min-w-0 rounded-md border bg-transparent px-3 text-sm"
+                disabled={!!editingRouteId}
+                className="h-9 w-full min-w-0 rounded-md border bg-transparent px-3 text-sm disabled:opacity-60"
               >
                 {PRESET_ROUTES.map((p) => (
                   <option key={p.key} value={p.key}>

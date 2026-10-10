@@ -1,9 +1,10 @@
-import { serviceTokenRoute } from "../../core/router";
+import { serviceTokenRoute, tenantRoute } from "../../core/router";
 import { writeAudit } from "../../core/audit";
 import { HttpError } from "../../core/auth";
 import { requireScope } from "../../core/service-token";
 import { sendSlackMessage } from "../../core/slack";
 import { postBlockKit, updateMessage } from "../../core/slack-post";
+import { textArrayLiteral } from "../../core/pg-array";
 
 const REMINDER_CATEGORIES = new Set(["bill", "insurance", "loan", "credit_card", "vehicle", "other"]);
 
@@ -149,6 +150,49 @@ export const integrationRoutes = {
         ORDER BY due_on ASC
       `;
       return Response.json(rows);
+    }),
+  },
+
+  // Metadata mirror of the worker's google_oauth_tokens. Worker upserts on
+  // every auth + refresh so the UI can show which accounts are connected
+  // without reaching across to the worker's HTTP server.
+  "/api/integrations/google-accounts": {
+    GET: tenantRoute(async (_req, ctx) => {
+      const rows = await ctx.tx`
+        SELECT email, scopes, status, last_refreshed_at, created_at, updated_at
+        FROM google_oauth_accounts
+        WHERE org_id = ${ctx.orgId}
+        ORDER BY email ASC
+      `;
+      return Response.json(rows);
+    }),
+    POST: serviceTokenRoute(async (req, ctx) => {
+      const { email, scopes, status, lastRefreshedAt } = await req.json();
+      if (!email || typeof email !== "string" || !email.trim()) {
+        throw new HttpError(400, "email is required");
+      }
+      const scopesArr: string[] = Array.isArray(scopes) ? scopes.filter((s) => typeof s === "string") : [];
+      const [row] = await ctx.tx`
+        INSERT INTO google_oauth_accounts (org_id, email, scopes, status, last_refreshed_at)
+        VALUES (
+          ${ctx.orgId}, ${email.trim()},
+          ${textArrayLiteral(scopesArr)}::text[],
+          ${status || "active"},
+          ${lastRefreshedAt ? new Date(lastRefreshedAt) : null}
+        )
+        ON CONFLICT (org_id, email) DO UPDATE SET
+          scopes = EXCLUDED.scopes,
+          status = EXCLUDED.status,
+          last_refreshed_at = COALESCE(EXCLUDED.last_refreshed_at, google_oauth_accounts.last_refreshed_at),
+          updated_at = now()
+        RETURNING email, scopes, status, last_refreshed_at
+      `;
+      await writeAudit(ctx.tx, ctx, {
+        action: "google_account:upsert",
+        resourceType: "google_oauth_account",
+        metadata: { email, tokenId: ctx.tokenId },
+      });
+      return Response.json(row);
     }),
   },
 };

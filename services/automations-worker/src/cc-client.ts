@@ -55,6 +55,9 @@ export const cc = {
 
   dueReminders: (days = 7) => call<DueReminder[]>(`/api/integrations/reminders/due?days=${days}`),
 
+  upsertGoogleAccount: (params: { email: string; scopes: string[]; status?: string; lastRefreshedAt?: string }) =>
+    call("/api/integrations/google-accounts", { method: "POST", body: JSON.stringify(params) }),
+
   createExpense: (params: {
     accountName?: string;
     amountCents: number | string;

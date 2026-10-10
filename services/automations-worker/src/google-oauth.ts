@@ -2,6 +2,7 @@ import { google } from "googleapis";
 import type { OAuth2Client } from "google-auth-library";
 import { pool } from "./db.js";
 import { encrypt, decrypt } from "./crypto.js";
+import { cc } from "./cc-client.js";
 
 function oauthClient(): OAuth2Client {
   const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI } = process.env;
@@ -67,6 +68,13 @@ export async function saveTokens(
        updated_at              = now()`,
     [userEmail, accessEnc.ciphertext, accessEnc.iv, refreshEnc.ciphertext, refreshEnc.iv, new Date(tokens.expiry_date), scopes]
   );
+
+  // Mirror metadata to CC so the UI can list connected accounts without
+  // reaching the worker's HTTP server. Non-blocking — a CC outage must not
+  // break Google refresh.
+  void cc
+    .upsertGoogleAccount({ email: userEmail, scopes, status: "active", lastRefreshedAt: new Date().toISOString() })
+    .catch((err) => console.error("google-account mirror upsert failed:", err?.message ?? err));
 }
 
 // Called by activities to build the freshly-authed google service clients.

@@ -48,7 +48,7 @@ export async function startSlackSockets(): Promise<void> {
     const key = row.id as string;
     if (active.has(key)) continue;
 
-    const appToken = decryptSlackToken(row.encrypted_app_token, row.app_token_iv);
+    const appToken = decryptSlackToken(row.encrypted_app_token as unknown as Buffer, row.app_token_iv as unknown as Buffer);
     const client = new SocketModeClient({ appToken });
 
     client.on("interactive", async ({ ack, body }: any) => {

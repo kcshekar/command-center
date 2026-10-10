@@ -1,22 +1,45 @@
 "use client";
 
-import { useState } from "react";
-import { buttonVariants } from "@/components/ui/button";
+import { useEffect, useState } from "react";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ExternalLink, Zap } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { ExternalLink, RefreshCw, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiFetch, apiErrorMessage } from "@/lib/api";
+import { toast } from "sonner";
 
-// Local-bootstrap page: hands you a "Sign in with Google" button that opens
-// the Automations Worker's own loopback OAuth flow. Only meaningful locally
-// — the worker's :3005 isn't exposed in prod.
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? "http://localhost:3005";
+
+interface GoogleAccount {
+  email: string;
+  scopes: string[];
+  status: string;
+  last_refreshed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 export default function AutomationsPage() {
   const [email, setEmail] = useState("");
+  const [accounts, setAccounts] = useState<GoogleAccount[]>([]);
+  const [loading, setLoading] = useState(true);
   const target = email.trim()
     ? `${WORKER_URL}/auth/google/start?email=${encodeURIComponent(email.trim())}`
     : null;
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      setAccounts(await apiFetch<GoogleAccount[]>("/integrations/google-accounts"));
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Failed to load Google accounts"));
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { refresh(); }, []);
 
   return (
     <div className="flex flex-col gap-6">
@@ -57,14 +80,47 @@ export default function AutomationsPage() {
             Sign in with Google
             <ExternalLink className="size-3.5" />
           </a>
-
-          <p className="text-xs text-muted-foreground">
-            Opens the worker's loopback flow at{" "}
-            <code className="font-mono">{WORKER_URL}</code>. Set{" "}
-            <code className="font-mono">NEXT_PUBLIC_WORKER_URL</code> in{" "}
-            <code className="font-mono">apps/web/.env</code> to point elsewhere.
-          </p>
         </div>
+      </div>
+
+      <div className="rounded-2xl border bg-card p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Connected Google accounts</h2>
+          <Button variant="ghost" size="icon" className="size-7" onClick={refresh} disabled={loading} aria-label="Refresh">
+            <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+          </Button>
+        </div>
+
+        {loading && accounts.length === 0 ? (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        ) : accounts.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No Google accounts connected yet.</p>
+        ) : (
+          <ul className="divide-y">
+            {accounts.map((a) => (
+              <li key={a.email} className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-mono text-sm">{a.email}</span>
+                  <Badge variant={a.status === "active" ? "default" : "destructive"} className="text-[10px]">
+                    {a.status}
+                  </Badge>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {a.scopes.map((s) => (
+                    <code key={s} className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                      {s.replace("https://www.googleapis.com/auth/", "")}
+                    </code>
+                  ))}
+                </div>
+                {a.last_refreshed_at && (
+                  <span className="text-[11px] text-muted-foreground">
+                    last refreshed {new Date(a.last_refreshed_at).toLocaleString()}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );
