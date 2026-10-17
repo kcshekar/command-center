@@ -2,14 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { slackApi, type SlackConnection, type SlackRoute, type EnvStatus } from "@/lib/slack-api";
+import { slackApi, type SlackConnection } from "@/lib/slack-api";
+import { notificationsApi, type NotificationRoute } from "@/lib/notifications-api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Bot, CheckCircle2, AlertCircle, Plus, RefreshCw, Trash2, ArrowRight, ShieldCheck, Zap, ToggleLeft, ToggleRight, Pencil } from "lucide-react";
+import { Bot, CheckCircle2, Plus, RefreshCw, Trash2, ShieldCheck, Zap, ToggleLeft, ToggleRight, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiErrorMessage } from "@/lib/api";
 
@@ -24,9 +25,8 @@ export default function SlackSettingsPage() {
   const { user } = useAuth();
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
 
-  const [envStatus, setEnvStatus] = useState<EnvStatus | null>(null);
   const [connections, setConnections] = useState<SlackConnection[]>([]);
-  const [routes, setRoutes] = useState<SlackRoute[]>([]);
+  const [routes, setRoutes] = useState<NotificationRoute[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Connection modal state
@@ -41,6 +41,7 @@ export default function SlackSettingsPage() {
   // Route modal state
   const [routeOpen, setRouteOpen] = useState(false);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
+  const [channelType, setChannelType] = useState<"slack" | "in_app">("slack");
   const [routeKey, setRouteKey] = useState("reminders.due");
   const [routeConnId, setRouteConnId] = useState("");
   const [channelId, setChannelId] = useState("");
@@ -49,17 +50,13 @@ export default function SlackSettingsPage() {
   const [approverIds, setApproverIds] = useState("");
   const [savingRoute, setSavingRoute] = useState(false);
 
-  const [migrating, setMigrating] = useState(false);
-
   async function refresh() {
     setLoading(true);
     try {
-      const [es, conns, rts] = await Promise.all([
-        slackApi.envStatus(),
+      const [conns, rts] = await Promise.all([
         slackApi.listConnections(),
-        slackApi.listRoutes(),
+        notificationsApi.listRoutes(),
       ]);
-      setEnvStatus(es);
       setConnections(conns);
       setRoutes(rts);
       if (conns.length > 0 && !routeConnId) {
@@ -75,19 +72,6 @@ export default function SlackSettingsPage() {
   useEffect(() => {
     if (isOwnerOrAdmin) refresh();
   }, [isOwnerOrAdmin]);
-
-  async function handleMigrateEnv() {
-    setMigrating(true);
-    try {
-      await slackApi.migrateEnv();
-      toast.success("Migrated environment Slack bot to DB registry!");
-      await refresh();
-    } catch (err) {
-      toast.error(apiErrorMessage(err, "Failed to migrate .env Slack bot"));
-    } finally {
-      setMigrating(false);
-    }
-  }
 
   function openCreateConn() {
     setConnId(null);
@@ -164,6 +148,7 @@ export default function SlackSettingsPage() {
 
   function openCreateRoute() {
     setEditingRouteId(null);
+    setChannelType("slack");
     setRouteKey("reminders.due");
     setRouteConnId(connections[0]?.id ?? "");
     setChannelId("");
@@ -173,11 +158,12 @@ export default function SlackSettingsPage() {
     setRouteOpen(true);
   }
 
-  function openEditRoute(r: SlackRoute) {
+  function openEditRoute(r: NotificationRoute) {
     setEditingRouteId(r.id);
+    setChannelType((r.channel_type === "in_app" ? "in_app" : "slack"));
     setRouteKey(r.route_key);
-    setRouteConnId(r.connection_id);
-    setChannelId(r.channel_id);
+    setRouteConnId(r.connection_id ?? "");
+    setChannelId(r.channel_id ?? "");
     setChannelName(r.channel_name ?? "");
     setAllowButtons(r.allow_buttons);
     setApproverIds((r.allowed_approver_slack_ids ?? []).join(", "));
@@ -185,7 +171,8 @@ export default function SlackSettingsPage() {
   }
 
   async function handleSaveRoute() {
-    if (!routeKey.trim() || !routeConnId || !channelId.trim()) return;
+    if (!routeKey.trim()) return;
+    if (channelType === "slack" && (!routeConnId || !channelId.trim())) return;
     setSavingRoute(true);
     try {
       const idsArray = approverIds
@@ -193,10 +180,11 @@ export default function SlackSettingsPage() {
         .map((s) => s.trim())
         .filter(Boolean);
 
-      await slackApi.upsertRoute({
+      await notificationsApi.upsertRoute({
         routeKey: routeKey.trim(),
-        connectionId: routeConnId,
-        channelId: channelId.trim(),
+        channelType,
+        connectionId: channelType === "slack" ? routeConnId : null,
+        channelId: channelType === "slack" ? channelId.trim() : null,
         channelName: channelName.trim() || undefined,
         allowButtons,
         allowedApproverSlackIds: idsArray,
@@ -213,7 +201,7 @@ export default function SlackSettingsPage() {
 
   async function handleDeleteRoute(id: string) {
     try {
-      await slackApi.removeRoute(id);
+      await notificationsApi.removeRoute(id);
       toast.success("Route mapping removed");
       await refresh();
     } catch (err) {
@@ -241,20 +229,6 @@ export default function SlackSettingsPage() {
           </p>
         </div>
       </div>
-
-      {envStatus?.envConfigured && !envStatus.hasDbConnections && (
-        <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 text-amber-950 dark:text-amber-200 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <AlertCircle className="size-5 shrink-0 text-amber-600 dark:text-amber-400" />
-            <div className="text-sm">
-              <span className="font-semibold">Legacy .env Slack Bot Detected:</span> Your environment contains <code className="font-mono text-xs">SLACK_BOT_TOKEN</code>. You can import it into the registry in one click.
-            </div>
-          </div>
-          <Button size="sm" variant="default" onClick={handleMigrateEnv} disabled={migrating} className="gap-1.5 shrink-0">
-            {migrating ? "Importing…" : "Import .env Bot"} <ArrowRight className="size-3.5" />
-          </Button>
-        </div>
-      )}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading registry…</p>
@@ -351,8 +325,8 @@ export default function SlackSettingsPage() {
                   <thead className="bg-muted/50 border-b font-medium text-muted-foreground">
                     <tr>
                       <th className="p-3">Route Key</th>
-                      <th className="p-3">Bot Connection</th>
-                      <th className="p-3">Channel Destination</th>
+                      <th className="p-3">Channel</th>
+                      <th className="p-3">Destination</th>
                       <th className="p-3">Interactive Buttons</th>
                       <th className="p-3 text-right">Actions</th>
                     </tr>
@@ -361,9 +335,16 @@ export default function SlackSettingsPage() {
                     {routes.map((r) => (
                       <tr key={r.id} className="hover:bg-muted/30">
                         <td className="p-3 font-mono font-medium text-foreground">{r.route_key}</td>
-                        <td className="p-3">{r.connection_name}</td>
-                        <td className="p-3 font-mono">
-                          {r.channel_name ? `${r.channel_name} (${r.channel_id})` : r.channel_id}
+                        <td className="p-3">
+                          <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
+                            {r.channel_type}
+                          </Badge>
+                        </td>
+                        <td className="p-3 font-mono text-xs">
+                          {r.channel_type === "in_app"
+                            ? "— (in-app feed)"
+                            : (r.channel_name ? `${r.channel_name} (${r.channel_id})` : r.channel_id) +
+                              (r.connection_name ? ` · ${r.connection_name}` : "")}
                         </td>
                         <td className="p-3">
                           {r.allow_buttons ? (
@@ -460,30 +441,60 @@ export default function SlackSettingsPage() {
             </div>
 
             <div className="flex min-w-0 flex-col gap-1.5">
-              <Label htmlFor="route-conn">Bot Connection</Label>
+              <Label htmlFor="channel-type">Channel</Label>
               <select
-                id="route-conn"
-                value={routeConnId}
-                onChange={(e) => setRouteConnId(e.target.value)}
-                className="h-9 w-full min-w-0 rounded-md border bg-transparent px-3 text-sm"
+                id="channel-type"
+                value={channelType}
+                onChange={(e) => {
+                  const next = e.target.value as "slack" | "in_app";
+                  setChannelType(next);
+                  // Switching to slack from in_app leaves routeConnId empty if the
+                  // row stored null — default to the first connection so the
+                  // dropdown's visible selection matches state and Save enables.
+                  if (next === "slack" && !routeConnId && connections[0]) {
+                    setRouteConnId(connections[0].id);
+                  }
+                }}
+                disabled={!!editingRouteId}
+                className="h-9 w-full min-w-0 rounded-md border bg-transparent px-3 text-sm disabled:opacity-60"
               >
-                {connections.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.workspace_id})
-                  </option>
-                ))}
+                <option value="slack">Slack</option>
+                <option value="in_app">In-app (CC notification feed)</option>
               </select>
+              {editingRouteId && (
+                <p className="text-[11px] text-muted-foreground">Channel is fixed once a route exists. Delete and recreate to change it.</p>
+              )}
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="channel-id">Slack Channel ID (C...)</Label>
-              <Input id="channel-id" value={channelId} onChange={(e) => setChannelId(e.target.value)} placeholder="e.g. C0897654321" />
-            </div>
+            {channelType === "slack" && (
+              <>
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <Label htmlFor="route-conn">Bot Connection</Label>
+                  <select
+                    id="route-conn"
+                    value={routeConnId}
+                    onChange={(e) => setRouteConnId(e.target.value)}
+                    className="h-9 w-full min-w-0 rounded-md border bg-transparent px-3 text-sm"
+                  >
+                    {connections.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.workspace_id})
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="channel-name">Channel Display Name (Optional)</Label>
-              <Input id="channel-name" value={channelName} onChange={(e) => setChannelName(e.target.value)} placeholder="e.g. #alerts" />
-            </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="channel-id">Slack Channel ID (C...)</Label>
+                  <Input id="channel-id" value={channelId} onChange={(e) => setChannelId(e.target.value)} placeholder="e.g. C0897654321" />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="channel-name">Channel Display Name (Optional)</Label>
+                  <Input id="channel-name" value={channelName} onChange={(e) => setChannelName(e.target.value)} placeholder="e.g. #alerts" />
+                </div>
+              </>
+            )}
 
             <div className="flex items-center gap-2 pt-2">
               <input
@@ -498,7 +509,7 @@ export default function SlackSettingsPage() {
               </Label>
             </div>
 
-            {allowButtons && (
+            {allowButtons && channelType === "slack" && (
               <div className="flex flex-col gap-1.5 pl-6 border-l-2 border-primary/30">
                 <Label htmlFor="approver-ids">Allowed Approver Slack User IDs (Comma separated)</Label>
                 <Input
@@ -512,7 +523,14 @@ export default function SlackSettingsPage() {
             )}
           </div>
           <DialogFooter>
-            <Button onClick={handleSaveRoute} disabled={savingRoute || !routeKey || !routeConnId || !channelId.trim()}>
+            <Button
+              onClick={handleSaveRoute}
+              disabled={
+                savingRoute ||
+                !routeKey ||
+                (channelType === "slack" && (!routeConnId || !channelId.trim()))
+              }
+            >
               {savingRoute ? "Saving…" : "Save Route"}
             </Button>
           </DialogFooter>

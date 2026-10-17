@@ -4,9 +4,9 @@ import type * as activities from "../activities/index.js";
 const {
   fetchGmailHistory,
   classifyEmailOllama,
-  postSlackMessage,
-  postApprovalCard,
-  updateApprovalMessage,
+  postNotification,
+  postApprovalNotification,
+  updateApprovalNotification,
   trashGmailMessages,
   ingestExpenseFromEmail,
   ingestBillReminder,
@@ -101,7 +101,7 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed
 
   // Nothing to approve → still post a digest so the owner sees the sweep ran.
   if (trashCandidates.length === 0) {
-    await postSlackMessage(
+    await postNotification(
       input.digestRouteKey,
       `Inbox sweep: ${messages.length} new, nothing to trash.${ingestionSummary}`
     );
@@ -131,26 +131,33 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed
     },
   ];
 
-  const posted = await postApprovalCard(input.approvalRouteKey, `Triage approval: ${trashCandidates.length} email(s)`, blocks);
+  const refs = await postApprovalNotification(
+    input.approvalRouteKey,
+    `Triage approval: ${trashCandidates.length} email(s)`,
+    blocks,
+    wf.workflowInfo().workflowId,
+    actionId
+  );
 
   const gotDecision = await wf.condition(() => state !== "pending", "24 hours");
 
   if (!gotDecision) {
-    await updateApprovalMessage(input.approvalRouteKey, posted.channel, posted.ts, "⌛ Approval expired after 24h — no emails were moved.");
+    await updateApprovalNotification(input.approvalRouteKey, refs, "⌛ Approval expired after 24h — no emails were moved.");
     return { trashed: 0, proposed: trashCandidates.length, ingestFailed };
   }
 
   if (state === "rejected") {
-    // Slack handler already updated the message with the "❌ Rejected" badge.
+    await updateApprovalNotification(
+      input.approvalRouteKey, refs,
+      `❌ Rejected${approver ? ` by <@${approver}>` : ""} — nothing moved.`
+    );
     return { trashed: 0, proposed: trashCandidates.length, ingestFailed };
   }
 
   const { trashed } = await trashGmailMessages(input.userEmail, trashCandidates.map((m) => m.id));
-  await updateApprovalMessage(
-    input.approvalRouteKey,
-    posted.channel,
-    posted.ts,
-    `✅ Approved by <@${approver}> — ${trashed} email(s) moved to trash.`
+  await updateApprovalNotification(
+    input.approvalRouteKey, refs,
+    `✅ Approved${approver ? ` by <@${approver}>` : ""} — ${trashed} email(s) moved to trash.`
   );
   return { trashed, proposed: trashCandidates.length, ingestFailed };
 }

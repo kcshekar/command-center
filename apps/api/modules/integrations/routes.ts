@@ -2,8 +2,7 @@ import { serviceTokenRoute, tenantRoute } from "../../core/router";
 import { writeAudit } from "../../core/audit";
 import { HttpError } from "../../core/auth";
 import { requireScope } from "../../core/service-token";
-import { sendSlackMessage } from "../../core/slack";
-import { postBlockKit, updateMessage } from "../../core/slack-post";
+import { notify, postApproval, updateNotification } from "../../core/notify";
 import { textArrayLiteral } from "../../core/pg-array";
 
 const REMINDER_CATEGORIES = new Set(["bill", "insurance", "loan", "credit_card", "vehicle", "other"]);
@@ -87,53 +86,64 @@ export const integrationRoutes = {
     }),
   },
 
-  // Worker never holds Slack tokens (D5). To post, it names a route key and
-  // CC resolves it through the same registry the reminder sweeper uses.
-  "/api/integrations/slack-send": {
+  // Worker never holds channel tokens. To post, it names a route key; CC
+  // resolves it to a channel_type and dispatches (slack | in_app | …).
+  "/api/integrations/notify": {
     POST: serviceTokenRoute(async (req, ctx) => {
-      requireScope(ctx, "slack:send");
+      requireScope(ctx, "slack:send"); // scope name predates B1; still gates delivery
       const { routeKey, text } = await req.json();
       if (!routeKey?.trim() || !text?.trim()) throw new HttpError(400, "routeKey and text are required");
-      await sendSlackMessage(text, { routeKey: routeKey.trim(), tx: ctx.tx, orgId: ctx.orgId });
+      await notify(ctx.tx, ctx.orgId, routeKey.trim(), { text });
       await writeAudit(ctx.tx, ctx, {
-        action: "slack:send_via_integration",
-        resourceType: "slack_route",
+        action: "notify:send",
+        resourceType: "notification_route",
         metadata: { routeKey, tokenId: ctx.tokenId },
       });
       return Response.json({ ok: true });
     }),
   },
 
-  // Posts an interactive Block Kit card. Returns the (channel, ts) pair so
-  // the workflow can hand it back on chat.update after the decision lands.
-  "/api/integrations/slack-approval": {
+  // Posts an interactive approval across every channel the route fans out to.
+  // Returns the list of refs; workflow stores them and hands them back to
+  // notify-update so each posting gets settled.
+  "/api/integrations/notify-approval": {
     POST: serviceTokenRoute(async (req, ctx) => {
       requireScope(ctx, "slack:send");
-      const { routeKey, text, blocks } = await req.json();
+      const { routeKey, text, blocks, workflowId, actionId } = await req.json();
       if (!routeKey?.trim() || !text?.trim() || !Array.isArray(blocks)) {
         throw new HttpError(400, "routeKey, text, blocks are required");
       }
-      const posted = await postBlockKit(ctx.tx, ctx.orgId, routeKey.trim(), { text, blocks });
-      await writeAudit(ctx.tx, ctx, {
-        action: "slack:approval_posted",
-        resourceType: "slack_route",
-        metadata: { routeKey, tokenId: ctx.tokenId, ts: posted.ts },
+      if (!workflowId?.trim() || !actionId?.trim()) {
+        throw new HttpError(400, "workflowId and actionId are required for approvals");
+      }
+      const refs = await postApproval(ctx.tx, ctx.orgId, routeKey.trim(), {
+        text, blocks, workflowId: workflowId.trim(), actionId: actionId.trim(),
       });
-      return Response.json(posted);
+      await writeAudit(ctx.tx, ctx, {
+        action: "notify:approval_posted",
+        resourceType: "notification_route",
+        metadata: { routeKey, tokenId: ctx.tokenId, refs },
+      });
+      return Response.json({ refs });
     }),
   },
 
-  // Rare: worker rewriting its own posted card if the flow ended before a
-  // button was clicked (24h timeout etc.). Socket-mode's handler updates the
-  // message on click by itself, so this is only for the "no click" paths.
-  "/api/integrations/slack-update": {
+  // "No click" paths — workflow rewrites its own card on timeout, or stamps
+  // the final result after acting. Takes the full refs[] from notify-approval
+  // so every channel's posting (slack + in_app) is updated together.
+  "/api/integrations/notify-update": {
     POST: serviceTokenRoute(async (req, ctx) => {
       requireScope(ctx, "slack:send");
-      const { routeKey, channel, ts, text, blocks } = await req.json();
-      if (!routeKey?.trim() || !channel || !ts || !text?.trim()) {
-        throw new HttpError(400, "routeKey, channel, ts, text are required");
+      const { routeKey, refs, text, blocks } = await req.json();
+      if (!routeKey?.trim() || !text?.trim() || !Array.isArray(refs) || refs.length === 0) {
+        throw new HttpError(400, "routeKey, refs[], text are required");
       }
-      await updateMessage(ctx.tx, ctx.orgId, routeKey.trim(), { channel, ts, text, blocks });
+      for (const r of refs) {
+        if (!r || typeof r.channel !== "string" || typeof r.ts !== "string") {
+          throw new HttpError(400, "each ref must be {channel, ts}");
+        }
+      }
+      await updateNotification(ctx.tx, ctx.orgId, routeKey.trim(), refs, { text, blocks });
       return Response.json({ ok: true });
     }),
   },

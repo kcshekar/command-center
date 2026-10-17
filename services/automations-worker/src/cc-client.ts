@@ -32,25 +32,27 @@ export interface DueReminder {
   notified_at: string | null;
 }
 
-export interface PostedMessage {
+export interface PostedRef {
   channel: string;
   ts: string;
 }
 
 export const cc = {
-  postSlack: (routeKey: string, text: string) =>
-    call("/api/integrations/slack-send", { method: "POST", body: JSON.stringify({ routeKey, text }) }),
+  notify: (routeKey: string, text: string) =>
+    call("/api/integrations/notify", { method: "POST", body: JSON.stringify({ routeKey, text }) }),
 
-  postSlackApproval: (routeKey: string, text: string, blocks: unknown[]) =>
-    call<PostedMessage>("/api/integrations/slack-approval", {
+  notifyApproval: async (routeKey: string, text: string, blocks: unknown[], workflowId: string, actionId: string): Promise<PostedRef[]> => {
+    const res = await call<{ refs: PostedRef[] }>("/api/integrations/notify-approval", {
       method: "POST",
-      body: JSON.stringify({ routeKey, text, blocks }),
-    }),
+      body: JSON.stringify({ routeKey, text, blocks, workflowId, actionId }),
+    });
+    return res.refs;
+  },
 
-  updateSlackMessage: (routeKey: string, channel: string, ts: string, text: string, blocks?: unknown[]) =>
-    call("/api/integrations/slack-update", {
+  updateNotification: (routeKey: string, refs: PostedRef[], text: string, blocks?: unknown[]) =>
+    call("/api/integrations/notify-update", {
       method: "POST",
-      body: JSON.stringify({ routeKey, channel, ts, text, blocks }),
+      body: JSON.stringify({ routeKey, refs, text, blocks }),
     }),
 
   dueReminders: (days = 7) => call<DueReminder[]>(`/api/integrations/reminders/due?days=${days}`),

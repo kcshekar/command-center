@@ -17,10 +17,20 @@ High-level map of how CC, the Automations Worker, Slack, Google, and Temporal fi
 ## The five building blocks
 
 ### 1. Bot Connections (`slack_connections`)
-A Slack **app** installed in a workspace. Stores encrypted `xoxb-...` (bot token) and optional `xapp-...` (app-level token for Socket Mode). Why DB and not .env: supports multiple bots across workspaces, operator can add one through `/slack` without a deploy.
+A Slack **app** installed in a workspace. Stores encrypted `xoxb-...` (bot token) and optional `xapp-...` (app-level token for Socket Mode). Why DB and not .env: supports multiple bots across workspaces, operator can add one through `/notifications` without a deploy.
 
-### 2. Route Mappings (`slack_routes`)
-Stable name → destination. Code calls `postSlackMessage("automations.digest", ...)`. The row says WHICH bot + WHICH channel. Decouples code from channel IDs (which rot). Also carries `allow_buttons` and `allowed_approver_slack_ids` so approvals have an explicit opt-in.
+### 2. Route Mappings (`notification_routes`)
+Stable name → destination. Code calls `postNotification("automations.digest", ...)`. The row says WHICH channel type + WHICH destination.
+
+A single `route_key` can have **multiple rows, one per `channel_type`** (fan-out). `UNIQUE(org_id, route_key, channel_type)` prevents duplicates within a channel but allows the same route to post to Slack AND the in-app bell at the same time. The dispatcher loops over all enabled rows for a route and posts to each.
+
+The `channel_type` column picks the adapter at dispatch time:
+- `slack` — requires `connection_id` (points at `slack_connections`) + `channel_id`. Delivers via Slack Web API.
+- `in_app` — no connection needed. Delivers by inserting into the `notifications` table; the CC UI's notification bell polls that queue.
+
+Also carries `allow_buttons` and (for slack) `allowed_approver_slack_ids` so approvals have an explicit opt-in. In-app approvals authorize by session user instead of a per-route list.
+
+**Approval fan-out:** when an approval route exists on both channels, both postings go out together. The first click (Slack button OR in-app button) wins — the workflow records the decision, settles the other channel's posting via `updateNotification(refs[])`, and continues.
 
 ### 3. Service Tokens (`service_tokens`)
 Bearer credential (`cc_st_<64 hex>`) for machine-to-machine auth: the worker uses one to call CC. Only the SHA-256 hash is stored; raw token shown once. Scoped to one org, carries explicit **scopes**.
@@ -43,9 +53,9 @@ Temporal schedule "morning-brief-daily" (07:30)
               Header: Authorization: Bearer cc_st_...
             → CC: resolve_service_token → requireScope("reminders:read") → tenant tx → SELECT
             → returns reminders
-      → postSlackMessage activity
-            → POST .../api/integrations/slack-send { routeKey, text }
-            → CC: slack_routes[routeKey] → slack_connections[conn_id] → decryptSlackToken → Slack API chat.postMessage
+      → postNotification activity
+            → POST .../api/integrations/notify { routeKey, text }
+            → CC: notification_routes[routeKey] → slack_connections[conn_id] → decryptSlackToken → Slack API chat.postMessage
 ```
 
 ### Inbox triage with approval (Phase 4)
@@ -55,7 +65,7 @@ Temporal schedule (every 15m) → inboxTriageWorkflow
   → fetchGmailHistory (Google API, using worker's stored tokens)
   → classifyEmailOllama (local LLM) per message
   → If trash candidates:
-      → postApprovalCard activity → Slack blocks with Approve/Reject buttons
+      → postApprovalNotification activity → Slack blocks with Approve/Reject buttons
       → wf.condition(() => state !== "pending", "24 hours")
           ← user clicks Approve in Slack
           ← Slack sends block_actions event via Socket Mode WebSocket
@@ -72,7 +82,7 @@ Temporal schedule (every 15m) → inboxTriageWorkflow
 
 A naive design would hardcode channel ID + bot token in worker `.env`. That gives you one bot, one channel, no per-notification approver list, and token rotation requires a deploy. The current structure buys:
 
-- **Operator controls without deploys** — add a bot, add a route, rotate a token, change approvers, all in `/slack` and `/tokens`
+- **Operator controls without deploys** — add a bot, add a route, rotate a token, change approvers, all in `/notifications` and `/tokens`
 - **Blast-radius control** — each token has one job and specific scopes; a leak compromises only what that token could do
 - **Separation of credentials** — Slack tokens in CC; Google tokens in worker; neither sees the other's secrets
 - **Multi-destination from day 1** — second workspace or second worker is a row insert, not a deploy
@@ -109,7 +119,7 @@ No architectural change required for the first few. Three generalizations are wo
 Rename `google_oauth_tokens` → `external_credentials` with a `service` column (`google|github|slack_user|...`). Mirror metadata to CC as `external_accounts` using the pattern established for Google.
 
 ### B. Generalize notification routes
-Rename `slack_routes` → `notification_routes`, add `channel_type` enum (`slack|whatsapp|discord|in_app`), per-type connection table. Dispatcher picks the adapter at call site. Buttons remain Slack + in-app only.
+Rename `notification_routes` → `notification_routes`, add `channel_type` enum (`slack|whatsapp|discord|in_app`), per-type connection table. Dispatcher picks the adapter at call site. Buttons remain Slack + in-app only.
 
 ### C. Automations dashboard
 One CC page listing active schedules (read from Temporal), their config, and credentials they rely on. Toggle on/off here instead of in Temporal UI.

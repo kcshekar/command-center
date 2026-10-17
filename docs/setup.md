@@ -31,7 +31,7 @@ bun run dev    # scripts/dev.sh — starts api, web, and worker if installed
 
 Open http://localhost:3000, sign up, confirm sidebar shows all nav items.
 
-**Slack**: In `/slack`, Add Bot Connection (paste `xoxb-...` + optional `xapp-...`), then Add Route Mappings for `reminders.due`, `automations.digest`, `automations.approval`.
+**Slack**: In `/notifications`, Add Bot Connection (paste `xoxb-...` + optional `xapp-...`), then Add Route Mappings for `reminders.due`, `automations.digest`, `automations.approval`.
 
 **App-level token for Socket Mode**: at <https://api.slack.com/apps> → App-Level Tokens → Generate (scope `connections:write`), copy `xapp-...`, paste into the bot's Edit modal.
 
@@ -113,7 +113,7 @@ sudo -u postgres psql -c "ALTER ROLE cc_admin CREATEDB CREATEROLE;"
 
 Verify:
 ```bash
-sudo -u postgres psql -d commandcenter -c "\dt" | grep -E "slack_connections|slack_routes|service_tokens|google_oauth_accounts"
+sudo -u postgres psql -d commandcenter -c "\dt" | grep -E "slack_connections|notification_routes|service_tokens|google_oauth_accounts"
 ```
 
 ### 3. Rebuild + reload CC
@@ -127,7 +127,7 @@ pm2 logs cc_api --lines 60
 
 ### 4. Slack setup
 
-In `/slack`:
+In `/notifications`:
 - **Add Bot Connection** (paste existing `xoxb-...` and the `xapp-...` from Slack app settings)
 - Make sure Socket Mode + Interactivity are both ON in <https://api.slack.com/apps>, click Save Changes, then **Install App → Reinstall to Workspace**
 - Add Route Mappings for `reminders.due`, `automations.digest`, `automations.approval`

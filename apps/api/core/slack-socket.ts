@@ -84,7 +84,7 @@ async function handleAction(orgId: string, payload: any): Promise<void> {
     await tx`SELECT set_config('app.current_org_id', ${orgId}, true)`;
     const rows = await tx`
       SELECT allowed_approver_slack_ids, allow_buttons
-      FROM slack_routes
+      FROM notification_routes
       WHERE org_id = ${orgId} AND route_key = ${parsed.routeKey}
     `;
     log.info("slack route lookup", { routeKey: parsed.routeKey, orgId, found: rows.length });
@@ -116,11 +116,23 @@ async function handleAction(orgId: string, payload: any): Promise<void> {
   if (!res.ok) throw new Error(`worker callback ${res.status}: ${await res.text()}`);
 
   // Update the original message in place: swap buttons for a status line.
-  // Same admin-background pattern the reminder sweeper uses — set the org
-  // GUC on a bare tx (no per-user context needed for the token resolve).
+  // Also settle any in-app approvals that fanned out from the same route so
+  // the bell UI switches from Approve/Reject buttons to the status badge.
+  const decisionState = parsed.decision === "approve" ? "approved" : "rejected";
   const badge = parsed.decision === "approve" ? "✅ Approved" : "❌ Rejected";
   await sql.begin(async (tx) => {
     await tx`SELECT set_config('app.current_org_id', ${orgId}, true)`;
+    await tx`
+      UPDATE notifications
+      SET approval_state = ${decisionState},
+          approval_decided_at = now(),
+          read_at = COALESCE(read_at, now())
+      WHERE org_id = ${orgId}
+        AND is_approval = true
+        AND approval_workflow_id = ${parsed.workflowId}
+        AND approval_action_id = ${parsed.actionId}
+        AND approval_state IS NULL
+    `;
     await updateMessage(tx, orgId, parsed.routeKey, {
       channel: messageRef.channel,
       ts: messageRef.ts,

@@ -1,7 +1,7 @@
 import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
 
-const { fetchCompletedTasksToday, rolloverOverdueTasks, postSlackMessage } = proxyActivities<typeof activities>({
+const { fetchCompletedTasksToday, rolloverOverdueTasks, postNotification } = proxyActivities<typeof activities>({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 3 },
 });
@@ -33,6 +33,6 @@ export async function eveningWrapWorkflow(input: EveningWrapInput): Promise<{ co
   else if (rolled.length === 0) lines.push("_none_");
   else for (const r of rolled) lines.push(`• ⏩ ${r.title} (was due ${r.from})`);
 
-  await postSlackMessage(input.slackRouteKey, lines.join("\n"));
+  await postNotification(input.slackRouteKey, lines.join("\n"));
   return { completed: completed?.length ?? 0, rolled: rolled?.length ?? 0 };
 }

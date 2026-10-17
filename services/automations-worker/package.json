@@ -12,7 +12,6 @@
     "worker": "tsx watch --env-file=.env src/worker.ts",
     "bootstrap": "tsx --env-file=.env src/scripts/bootstrap.ts",
     "migrate": "tsx --env-file=.env src/scripts/migrate.ts",
-    "google:auth": "tsx --env-file=.env src/scripts/authorize-google.ts",
     "schedules:init": "tsx --env-file=.env src/scripts/init-schedules.ts",
     "schedules:delete": "tsx --env-file=.env src/scripts/delete-schedule.ts",
     "typecheck": "tsc --noEmit -p ."

@@ -8,7 +8,7 @@ export const NAV_ITEMS = [
   { href: "/knowledge", label: "Knowledge Base", icon: BookOpen },
   { href: "/finance", label: "Finance", icon: Wallet },
   { href: "/reminders", label: "Reminders", icon: BellRing },
-  { href: "/slack", label: "Slack Bots", icon: Bot },
+  { href: "/notifications", label: "Notifications", icon: Bot },
   { href: "/tokens", label: "Service Tokens", icon: Key },
   { href: "/agent-automations", label: "Automations", icon: Zap },
 ];

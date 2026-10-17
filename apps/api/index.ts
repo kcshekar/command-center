@@ -17,6 +17,7 @@ import { reminderRoutes, startReminderSweepInterval } from "./modules/reminders/
 import { recommendRoutes } from "./modules/finance/recommend";
 import { auditRoutes } from "./modules/audit/routes";
 import { slackRoutes } from "./modules/slack/routes";
+import { notificationRoutes } from "./modules/notifications/routes";
 import { serviceTokenRoutes } from "./modules/service-tokens/routes";
 import { integrationRoutes } from "./modules/integrations/routes";
 
@@ -230,6 +231,7 @@ Bun.serve({
     ...recommendRoutes,
     ...auditRoutes,
     ...slackRoutes,
+    ...notificationRoutes,
     ...serviceTokenRoutes,
     ...integrationRoutes,
   },

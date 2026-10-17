@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth-context";
 import { NAV_ITEMS } from "@/lib/nav-items";
 import { CommandPalette } from "@/components/command-palette";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { NotificationBell } from "@/components/notification-bell";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -102,6 +103,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </Button>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <NotificationBell />
             <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger render={<Button variant="ghost" size="sm" />}>Account</DropdownMenuTrigger>

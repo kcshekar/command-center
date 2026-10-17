@@ -12,13 +12,13 @@ Every real failure mode we've hit, with symptom → cause → fix. Grep for the 
 **Cause**: Bun.sql serializes a JS array as CSV; Postgres `text[]` needs `{"a","b"}` literal.
 **Fix**: Use `textArrayLiteral(...)::text[]` from `apps/api/core/pg-array.ts`. Already applied across the Slack + service-tokens routes.
 
-### `permission denied for table slack_routes` / `slack_connections` / `service_tokens`
+### `permission denied for table notification_routes` / `slack_connections` / `service_tokens`
 **Cause**: Migrations run as the owner role from `DATABASE_URL`; app queries as `command_center_app` from `APP_DATABASE_URL`. Postgres gives new tables no privileges to other roles unless the migration GRANTs them.
 **Fix**: Migration 0018 backfills grants and sets `ALTER DEFAULT PRIVILEGES` so future migrations don't repeat this. If 0018 hasn't run yet on an environment:
 
 ```sql
 GRANT SELECT, INSERT, UPDATE, DELETE
-  ON slack_connections, slack_routes, service_tokens
+  ON slack_connections, notification_routes, service_tokens
   TO command_center_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO command_center_app;
 ```
@@ -37,7 +37,7 @@ If `bun -e` keeps failing after network recovery, pass env explicitly: `bun --en
 
 ### Setting `SLACK_ENCRYPTION_SECRET` breaks reminder posting
 **Cause**: Pre-change, Slack token encryption fell back to `SESSION_SECRET`. Setting a fresh `SLACK_ENCRYPTION_SECRET` means stored bot tokens can't decrypt.
-**Fix**: Set `SLACK_ENCRYPTION_SECRET` to the **same bytes as current `SESSION_SECRET`** in existing prod, OR delete + re-add the bot connection via `/slack` to re-encrypt under the new key.
+**Fix**: Set `SLACK_ENCRYPTION_SECRET` to the **same bytes as current `SESSION_SECRET`** in existing prod, OR delete + re-add the bot connection via `/notifications` to re-encrypt under the new key.
 
 ### App-level token not saving when editing a bot connection
 **Cause**: Original edit handler treated a blank bot token as "change nothing" and skipped the whole token-update branch — dropping the app token.
@@ -47,16 +47,16 @@ If `bun -e` keeps failing after network recovery, pass env explicitly: `bun --en
 **Cause**: Add Route modal defaults to `reminders.due`; `ON CONFLICT (org_id, route_key)` upsert silently updates the existing reminders row if you don't change the dropdown.
 **Fix**: Change System Route Key dropdown first, then fill the rest. Verify:
 ```bash
-bun -e 'const s=new Bun.SQL(process.env.DATABASE_URL); console.log(await s`SELECT route_key, is_enabled, channel_id FROM slack_routes ORDER BY route_key`);'
+bun -e 'const s=new Bun.SQL(process.env.DATABASE_URL); console.log(await s`SELECT route_key, is_enabled, channel_id FROM notification_routes ORDER BY route_key`);'
 ```
 
 ### `Slack not configured for route 'automations.digest'`
 **Cause**: Row missing/disabled, OR backing connection status != 'active'.
 **Fix**:
 ```bash
-bun -e 'const s=new Bun.SQL(process.env.DATABASE_URL); console.log(await s`SELECT r.route_key, r.is_enabled, c.name AS bot, c.status FROM slack_routes r JOIN slack_connections c ON c.id = r.connection_id ORDER BY r.route_key`);'
+bun -e 'const s=new Bun.SQL(process.env.DATABASE_URL); console.log(await s`SELECT r.route_key, r.is_enabled, c.name AS bot, c.status FROM notification_routes r JOIN slack_connections c ON c.id = r.connection_id ORDER BY r.route_key`);'
 ```
-Then add the missing route in `/slack` or re-enable the connection.
+Then add the missing route in `/notifications` or re-enable the connection.
 
 ### Button click shows ⚠️ icon, nothing happens
 **Causes** (in order of likelihood):
@@ -66,10 +66,10 @@ Then add the missing route in `/slack` or re-enable the connection.
 
 ### `route automations.approval does not allow buttons`
 **Cause**: `allow_buttons` is false, OR the handler query didn't set `app.current_org_id` and RLS filtered the row.
-**Fix**: In `/slack` → Edit the route → Allow buttons ON. Also already patched: handler now sets GUC before querying.
+**Fix**: In `/notifications` → Edit the route → Allow buttons ON. Also already patched: handler now sets GUC before querying.
 
 ### `user U... not in allowed approvers for automations.approval`
-**Fix**: In `/slack` → Edit the route → add your Slack user ID to the approver list. Find your ID in Slack: profile → three-dot menu → Copy member ID.
+**Fix**: In `/notifications` → Edit the route → add your Slack user ID to the approver list. Find your ID in Slack: profile → three-dot menu → Copy member ID.
 
 ## Google
 

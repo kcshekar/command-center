@@ -1,6 +1,6 @@
 import { pool } from "../db.js";
 import { gmailClient, calendarClient, tasksClient } from "../google-oauth.js";
-import { cc, type DueReminder } from "../cc-client.js";
+import { cc, type DueReminder, type PostedRef } from "../cc-client.js";
 import { classifyEmail, extractExpense, extractBill, type Classification } from "../ollama.js";
 import { parseExpenseEmail, type EmailInput } from "../parsers/index.js";
 
@@ -127,25 +127,26 @@ export async function fetchCCDueReminders(days = 7): Promise<DueReminder[]> {
   return cc.dueReminders(days);
 }
 
-export async function postSlackMessage(routeKey: string, text: string): Promise<void> {
-  await cc.postSlack(routeKey, text);
+export async function postNotification(routeKey: string, text: string): Promise<void> {
+  await cc.notify(routeKey, text);
 }
 
-export async function postApprovalCard(
+export async function postApprovalNotification(
   routeKey: string,
   text: string,
-  blocks: unknown[]
-): Promise<{ channel: string; ts: string }> {
-  return cc.postSlackApproval(routeKey, text, blocks);
+  blocks: unknown[],
+  workflowId: string,
+  actionId: string
+): Promise<PostedRef[]> {
+  return cc.notifyApproval(routeKey, text, blocks, workflowId, actionId);
 }
 
-export async function updateApprovalMessage(
+export async function updateApprovalNotification(
   routeKey: string,
-  channel: string,
-  ts: string,
+  refs: PostedRef[],
   text: string
 ): Promise<void> {
-  await cc.updateSlackMessage(routeKey, channel, ts, text, [
+  await cc.updateNotification(routeKey, refs, text, [
     { type: "section", text: { type: "mrkdwn", text } },
   ]);
 }

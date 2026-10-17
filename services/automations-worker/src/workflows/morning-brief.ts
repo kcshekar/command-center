@@ -5,7 +5,7 @@ const {
   fetchCalendarEvents,
   fetchGoogleTasks,
   fetchCCDueReminders,
-  postSlackMessage,
+  postNotification,
 } = proxyActivities<typeof activities>({
   startToCloseTimeout: "1 minute",
   retry: { maximumAttempts: 3 },
@@ -37,5 +37,5 @@ export async function morningBriefWorkflow(input: MorningBriefInput): Promise<vo
   if (dueReminders.length === 0) lines.push("_none_");
   else for (const r of dueReminders) lines.push(`• ${r.title} — ${r.due_on.slice(0, 10)} (${r.category})`);
 
-  await postSlackMessage(input.slackRouteKey, lines.join("\n"));
+  await postNotification(input.slackRouteKey, lines.join("\n"));
 }
