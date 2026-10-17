@@ -1,20 +1,33 @@
+import { getToken, ccBaseUrl, evictTokenCache, evictIdentityCache } from "./cc-token-store.js";
+
 // Thin fetch wrapper around Command Center's /api/integrations/* endpoints.
-// Auth: single service token loaded from env (rotate by re-issuing in CC UI).
+// Auth: short-lived service tokens minted by cc-token-store from the
+// worker's worker_identity row (install script seeds it, UI rotates it).
+// Falls back to CC_SERVICE_TOKEN env var when the identity row is missing
+// (zero-downtime migration path).
+//
+// For now every call uses the ALL_SCOPES set — once we add scope-split per
+// activity we'll thread a scopes array through each helper.
 
-const BASE = process.env.CC_BASE_URL ?? "http://localhost:3001";
-const TOKEN = process.env.CC_SERVICE_TOKEN;
+const ALL_SCOPES = ["slack:send", "reminders:read", "reminders:write", "expenses:write"] as const;
 
-if (!TOKEN) throw new Error("CC_SERVICE_TOKEN must be set");
-
-async function call<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+async function call<T = unknown>(path: string, init?: RequestInit, retryOn401 = true): Promise<T> {
+  const base = await ccBaseUrl();
+  const token = await getToken([...ALL_SCOPES]);
+  const res = await fetch(`${base}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${TOKEN}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
     },
   });
+  if (res.status === 401 && retryOn401) {
+    // Token or identity may be stale — flush both caches and retry once.
+    evictTokenCache();
+    evictIdentityCache();
+    return call<T>(path, init, false);
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`CC ${init?.method ?? "GET"} ${path} → ${res.status}: ${body.slice(0, 200)}`);

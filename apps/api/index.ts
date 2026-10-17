@@ -19,6 +19,7 @@ import { auditRoutes } from "./modules/audit/routes";
 import { slackRoutes } from "./modules/slack/routes";
 import { notificationRoutes } from "./modules/notifications/routes";
 import { serviceTokenRoutes } from "./modules/service-tokens/routes";
+import { workerClientRoutes } from "./modules/worker-clients/routes";
 import { integrationRoutes } from "./modules/integrations/routes";
 
 const port = Number(process.env.API_PORT ?? 3001);
@@ -233,6 +234,7 @@ Bun.serve({
     ...slackRoutes,
     ...notificationRoutes,
     ...serviceTokenRoutes,
+    ...workerClientRoutes,
     ...integrationRoutes,
   },
 });

@@ -2,6 +2,8 @@ import { createServer } from "node:http";
 import { Connection, Client } from "@temporalio/client";
 import { google } from "googleapis";
 import { oauthClient, saveTokens } from "./google-oauth.js";
+import { pool } from "./db.js";
+import { evictIdentityCache, evictTokenCache } from "./cc-token-store.js";
 
 // Tiny node:http server. Two concerns, same port:
 //   POST /callback/approval          — Slack button click dispatched by CC
@@ -51,6 +53,55 @@ export async function startCallbackServer(): Promise<void> {
       } catch (err) {
         console.error("callback error", err);
         res.writeHead(400, { "Content-Type": "application/json" }).end(
+          JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+        );
+      }
+      return;
+    }
+
+    // ─── Rotate worker identity (CC → worker, bearer-authed) ─────────────
+    // CC's rotate button pushes the new client_secret here so the operator
+    // never has to SSH. Reuses WORKER_CALLBACK_TOKEN — localhost-only in
+    // normal deploy (nginx doesn't proxy /admin/* to the worker).
+    if (req.method === "POST" && url.pathname === "/admin/worker-identity") {
+      const auth = req.headers.authorization ?? "";
+      if (auth !== `Bearer ${token}`) return void res.writeHead(401).end();
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      try {
+        const { client_id, client_secret, cc_base_url } = JSON.parse(body) as {
+          client_id?: string;
+          client_secret?: string;
+          cc_base_url?: string;
+        };
+        if (!client_id || !client_secret) throw new Error("client_id and client_secret are required");
+        // Resolve cc_base_url: use what was passed; else keep the existing
+        // row's value (rotation path); else fall back to env; else default.
+        // NOT NULL on the column is checked before ON CONFLICT, so a bare
+        // null here would 500 even when the row exists.
+        const existing = await pool.query(`SELECT cc_base_url FROM worker_identity WHERE id = 1`);
+        const resolvedBase =
+          cc_base_url ??
+          existing.rows[0]?.cc_base_url ??
+          process.env.CC_BASE_URL ??
+          "http://localhost:3011";
+        await pool.query(
+          `INSERT INTO worker_identity (id, client_id, client_secret, cc_base_url, updated_at)
+           VALUES (1, $1, $2, $3, now())
+           ON CONFLICT (id) DO UPDATE SET
+             client_id = EXCLUDED.client_id,
+             client_secret = EXCLUDED.client_secret,
+             cc_base_url = EXCLUDED.cc_base_url,
+             updated_at = now()`,
+          [client_id, client_secret, resolvedBase]
+        );
+        // Flush caches so the next mint uses the new secret immediately.
+        evictIdentityCache();
+        evictTokenCache();
+        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        console.error("worker-identity rotate error", err);
+        res.writeHead(500, { "Content-Type": "application/json" }).end(
           JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
         );
       }

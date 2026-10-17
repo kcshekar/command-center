@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { serviceTokensApi, AVAILABLE_SCOPES, type ServiceToken, type NewServiceToken } from "@/lib/service-tokens-api";
+import { WorkerIdentitiesSection } from "@/components/worker-identities-section";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -84,17 +85,28 @@ export default function ServiceTokensPage() {
     toast.success("Token copied");
   }
 
-  if (!isOwnerOrAdmin) return <p className="text-sm text-muted-foreground">Only owners/admins can manage service tokens.</p>;
+  if (!isOwnerOrAdmin) return <p className="text-sm text-muted-foreground">Only owners/admins can manage machine credentials.</p>;
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-heading font-semibold tracking-tight">Service Tokens</h1>
-          <p className="text-sm text-muted-foreground">
-            Bearer tokens for machine-to-machine calls from the Automations Worker. Raw tokens are shown once at creation and cannot be recovered.
-          </p>
-        </div>
+    <div className="flex flex-col gap-10">
+      <div>
+        <h1 className="text-xl font-heading font-semibold tracking-tight">Machine Credentials</h1>
+        <p className="text-sm text-muted-foreground">
+          Credentials used by machine callers. External scripts and integrations use <strong>service tokens</strong>; the Automations Worker mints its own short-lived tokens via a <strong>worker identity</strong>. Raw values are shown once and cannot be recovered.
+        </p>
+      </div>
+
+      {/* ─── Section A: External API Tokens ──────────────────────────────── */}
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold flex items-center gap-2">
+              <KeyRound className="size-4 text-primary" /> External API Tokens
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              For scripts, iOS Shortcut, Zapier, and any other machine caller that isn't the Automations Worker. The worker itself uses minted tokens from the Worker Identities section below.
+            </p>
+          </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger render={<Button size="sm" className="gap-1.5" onClick={openCreate} />}>
             <Plus className="size-4" /> Issue token
@@ -218,6 +230,10 @@ export default function ServiceTokensPage() {
           </TableBody>
         </Table>
       )}
+      </div>
+
+      {/* ─── Section B: Worker Identities ────────────────────────────────── */}
+      <WorkerIdentitiesSection />
     </div>
   );
 }

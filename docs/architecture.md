@@ -32,8 +32,14 @@ Also carries `allow_buttons` and (for slack) `allowed_approver_slack_ids` so app
 
 **Approval fan-out:** when an approval route exists on both channels, both postings go out together. The first click (Slack button OR in-app button) wins — the workflow records the decision, settles the other channel's posting via `updateNotification(refs[])`, and continues.
 
-### 3. Service Tokens (`service_tokens`)
-Bearer credential (`cc_st_<64 hex>`) for machine-to-machine auth: the worker uses one to call CC. Only the SHA-256 hash is stored; raw token shown once. Scoped to one org, carries explicit **scopes**.
+### 3. Service Tokens (`service_tokens`) + Worker Identities (`worker_clients`)
+Two kinds of machine credentials, both managed from `/tokens`:
+
+- **Service tokens** — bearer `cc_st_<64 hex>` tokens for one-off machine callers (scripts, Shortcuts, Zapier, external webhooks). Admin-issued via `/tokens`. Only the SHA-256 hash is stored; raw shown once. Long-lived until revoked.
+
+- **Worker identities** — OAuth2-style `(client_id, client_secret)` pairs that the Automations Worker uses to mint short-lived service tokens on demand via `POST /api/service-tokens/mint`. Admin registers a worker in `/tokens` → gets a client_id + secret → runs `pnpm tokens:init` on the worker VM to seed the single-row `worker_identity` table. The worker never carries a long-lived `cc_st_...` — minted tokens auto-expire within an hour, and rotation is a UI click (no SSH, no restart).
+
+Both ultimately produce rows in `service_tokens` (minted ones carry `expires_at` and `minted_by_client_id`); CC's auth middleware has one lookup path regardless of origin.
 
 ### 4. Scopes
 Strings on a service token like `slack:send`, `expenses:write`, `reminders:read`. Enforced per endpoint via `requireScope(ctx, "...")`. Smaller blast radius on leak.
