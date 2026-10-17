@@ -153,44 +153,51 @@ export const integrationRoutes = {
     }),
   },
 
-  // Metadata mirror of the worker's google_oauth_tokens. Worker upserts on
-  // every auth + refresh so the UI can show which accounts are connected
-  // without reaching across to the worker's HTTP server.
-  "/api/integrations/google-accounts": {
+  // Metadata mirror of the worker's external_credentials (metadata only, no
+  // tokens). Worker upserts on every auth + refresh so the UI can list
+  // connected accounts without reaching the worker's HTTP server.
+  "/api/integrations/external-accounts": {
     GET: tenantRoute(async (_req, ctx) => {
       const rows = await ctx.tx`
-        SELECT email, scopes, status, last_refreshed_at, created_at, updated_at
-        FROM google_oauth_accounts
+        SELECT service, user_id, label, scopes, status, last_refreshed_at, metadata, created_at, updated_at
+        FROM external_accounts
         WHERE org_id = ${ctx.orgId}
-        ORDER BY email ASC
+        ORDER BY service ASC, user_id ASC, label ASC
       `;
       return Response.json(rows);
     }),
     POST: serviceTokenRoute(async (req, ctx) => {
-      const { email, scopes, status, lastRefreshedAt } = await req.json();
-      if (!email || typeof email !== "string" || !email.trim()) {
-        throw new HttpError(400, "email is required");
+      const { service, userId, label, scopes, status, lastRefreshedAt, metadata } = await req.json();
+      if (!service || typeof service !== "string" || !service.trim()) {
+        throw new HttpError(400, "service is required");
       }
+      if (!userId || typeof userId !== "string" || !userId.trim()) {
+        throw new HttpError(400, "userId is required");
+      }
+      const labelVal = (typeof label === "string" && label.trim()) || "primary";
       const scopesArr: string[] = Array.isArray(scopes) ? scopes.filter((s) => typeof s === "string") : [];
+      const metadataVal = metadata && typeof metadata === "object" ? metadata : {};
       const [row] = await ctx.tx`
-        INSERT INTO google_oauth_accounts (org_id, email, scopes, status, last_refreshed_at)
+        INSERT INTO external_accounts (org_id, service, user_id, label, scopes, status, last_refreshed_at, metadata)
         VALUES (
-          ${ctx.orgId}, ${email.trim()},
+          ${ctx.orgId}, ${service.trim()}, ${userId.trim()}, ${labelVal},
           ${textArrayLiteral(scopesArr)}::text[],
           ${status || "active"},
-          ${lastRefreshedAt ? new Date(lastRefreshedAt) : null}
+          ${lastRefreshedAt ? new Date(lastRefreshedAt) : null},
+          ${JSON.stringify(metadataVal)}::jsonb
         )
-        ON CONFLICT (org_id, email) DO UPDATE SET
+        ON CONFLICT (org_id, service, user_id, label) DO UPDATE SET
           scopes = EXCLUDED.scopes,
           status = EXCLUDED.status,
-          last_refreshed_at = COALESCE(EXCLUDED.last_refreshed_at, google_oauth_accounts.last_refreshed_at),
+          last_refreshed_at = COALESCE(EXCLUDED.last_refreshed_at, external_accounts.last_refreshed_at),
+          metadata = EXCLUDED.metadata,
           updated_at = now()
-        RETURNING email, scopes, status, last_refreshed_at
+        RETURNING service, user_id, label, scopes, status, last_refreshed_at, metadata
       `;
       await writeAudit(ctx.tx, ctx, {
-        action: "google_account:upsert",
-        resourceType: "google_oauth_account",
-        metadata: { email, tokenId: ctx.tokenId },
+        action: "external_account:upsert",
+        resourceType: "external_account",
+        metadata: { service, userId, label: labelVal, tokenId: ctx.tokenId },
       });
       return Response.json(row);
     }),
