@@ -14,6 +14,7 @@
     "migrate": "tsx --env-file=.env src/scripts/migrate.ts",
     "schedules:init": "tsx --env-file=.env src/scripts/init-schedules.ts",
     "schedules:delete": "tsx --env-file=.env src/scripts/delete-schedule.ts",
+    "tokens:init": "tsx --env-file=.env src/scripts/init-worker-identity.ts",
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "@temporalio/worker": "^1.11.0",
     "@temporalio/workflow": "^1.11.0",
     "dotenv": "^18.0.5",
+    "google-auth-library": "^11.2.0",
     "googleapis": "^144.0.0",
     "pg": "^8.13.0"
   },
