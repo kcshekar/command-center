@@ -20,6 +20,11 @@ import { slackRoutes } from "./modules/slack/routes";
 import { notificationRoutes } from "./modules/notifications/routes";
 import { serviceTokenRoutes } from "./modules/service-tokens/routes";
 import { workerClientRoutes } from "./modules/worker-clients/routes";
+import { userCredentialRoutes } from "./modules/user-credentials/routes";
+import { priceWatchRoutes } from "./modules/price-watches/routes";
+import { knowledgeItemRoutes } from "./modules/knowledge-items/routes";
+import { promptRoutes } from "./modules/prompts/routes";
+import { automationRoutes } from "./modules/automations/routes";
 import { integrationRoutes } from "./modules/integrations/routes";
 
 const port = Number(process.env.API_PORT ?? 3001);
@@ -235,6 +240,11 @@ Bun.serve({
     ...notificationRoutes,
     ...serviceTokenRoutes,
     ...workerClientRoutes,
+    ...userCredentialRoutes,
+    ...priceWatchRoutes,
+    ...knowledgeItemRoutes,
+    ...promptRoutes,
+    ...automationRoutes,
     ...integrationRoutes,
   },
 });

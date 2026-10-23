@@ -128,7 +128,7 @@ Rename `google_oauth_tokens` → `external_credentials` with a `service` column 
 Rename `notification_routes` → `notification_routes`, add `channel_type` enum (`slack|whatsapp|discord|in_app`), per-type connection table. Dispatcher picks the adapter at call site. Buttons remain Slack + in-app only.
 
 ### C. Automations dashboard
-One CC page listing active schedules (read from Temporal), their config, and credentials they rely on. Toggle on/off here instead of in Temporal UI.
+One CC page listing active schedules (read from Temporal), their config, and credentials they rely on. Toggle on/off here instead of in Temporal UI. **Shipped C1 + C2**: `/agent-automations` reads schedules via `@temporalio/client` from CC's api process and surfaces pause/unpause/trigger-now controls alongside a compact Connected Accounts panel.
 
 These are evolutionary, not rewrites. The three "generic" tables (notifications, credentials, dashboard) replace their Slack/Google-specific predecessors; existing workflows keep working after a column rename + an adapter indirection.
 

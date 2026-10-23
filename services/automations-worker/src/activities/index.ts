@@ -4,6 +4,8 @@ import { cc, type DueReminder, type PostedRef } from "../cc-client.js";
 import { classifyEmail, extractExpense, extractBill, type Classification } from "../ollama.js";
 import { parseExpenseEmail, type EmailInput } from "../parsers/index.js";
 
+export { fetchInitialPriceSnapshot, listDuePriceWatches } from "./price-watch.js";
+
 // ─── Google reads ────────────────────────────────────────────────────────────
 
 export async function fetchCalendarEvents(userEmail: string, hours = 24): Promise<Array<{ start: string; end: string; summary: string }>> {

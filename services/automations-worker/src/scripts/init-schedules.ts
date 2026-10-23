@@ -21,6 +21,11 @@ async function main() {
   const connection = await Connection.connect({ address });
   const client = new Client({ connection, namespace });
 
+  // Temporal parses cron strings in UTC unless the spec names a timezone.
+  // All our cadences (morning brief, evening wrap, daily poll) are wall-clock
+  // in the user's local zone — IST at home — so set it once up front.
+  const scheduleTimezone = process.env.SCHEDULE_TIMEZONE ?? "Asia/Kolkata";
+
   // D1: catchup 1h so downtime doesn't stack a week of missed runs.
   const commonPolicies = { catchupWindow: "1 hour" as const, overlap: ScheduleOverlapPolicy.SKIP };
 
@@ -31,6 +36,7 @@ async function main() {
     args: [{ userEmail, slackRouteKey: digest }],
     taskQueue,
     policies: commonPolicies,
+    timezone: scheduleTimezone,
   });
 
   await upsertSchedule(client, {
@@ -40,6 +46,7 @@ async function main() {
     args: [{ userEmail, slackRouteKey: digest }],
     taskQueue,
     policies: commonPolicies,
+    timezone: scheduleTimezone,
   });
 
   // P1 #6: polling replacement for the unbuilt Gmail push subscription.
@@ -53,31 +60,48 @@ async function main() {
       args: [{ userEmail, digestRouteKey: digest, approvalRouteKey: approval }],
       taskQueue,
       policies: commonPolicies,
+      timezone: scheduleTimezone,
     });
   } else {
     console.log("skipping inbox-triage-every-15m schedule (--skip-triage)");
   }
+
+  // A6 daily poll — org-wide. One run per day iterates every active watch,
+  // writes back snapshots via CC. Verdict transitions post to the configured
+  // notification route (defaults to the digest).
+  await upsertSchedule(client, {
+    scheduleId: "price-watch-daily-poll",
+    cron: "0 7 * * *", // 07:00 local, before the morning brief
+    workflowType: "priceWatchDailyPollWorkflow",
+    args: [],
+    taskQueue,
+    policies: commonPolicies,
+    timezone: scheduleTimezone,
+  });
 
   await connection.close();
 }
 
 async function upsertSchedule(
   client: Client,
-  s: { scheduleId: string; cron: string; workflowType: string; args: unknown[]; taskQueue: string; policies: any }
+  s: { scheduleId: string; cron: string; workflowType: string; args: unknown[]; taskQueue: string; policies: any; timezone: string }
 ) {
   const action = { type: "startWorkflow" as const, workflowType: s.workflowType, args: s.args, taskQueue: s.taskQueue };
+  const spec = { cronExpressions: [s.cron], timezoneName: s.timezone };
   try {
     await client.schedule.create({
       scheduleId: s.scheduleId,
       action,
-      spec: { cronExpressions: [s.cron] },
+      spec,
       policies: s.policies,
     });
-    console.log(`created schedule ${s.scheduleId}`);
+    console.log(`created schedule ${s.scheduleId} (${s.timezone})`);
   } catch (err) {
     if (!String((err as any)?.message ?? err).includes("already exists")) throw err;
-    await client.schedule.getHandle(s.scheduleId).update((prev) => ({ ...prev, action }));
-    console.log(`updated existing schedule ${s.scheduleId}`);
+    // Also re-apply spec so the timezone update takes effect on existing
+    // schedules created before this field was set.
+    await client.schedule.getHandle(s.scheduleId).update((prev) => ({ ...prev, action, spec }));
+    console.log(`updated existing schedule ${s.scheduleId} (${s.timezone})`);
   }
 }
 

@@ -9,7 +9,15 @@ import { getToken, ccBaseUrl, evictTokenCache, evictIdentityCache } from "./cc-t
 // For now every call uses the ALL_SCOPES set — once we add scope-split per
 // activity we'll thread a scopes array through each helper.
 
-const ALL_SCOPES = ["slack:send", "reminders:read", "reminders:write", "expenses:write"] as const;
+const ALL_SCOPES = [
+  "slack:send",
+  "reminders:read",
+  "reminders:write",
+  "expenses:write",
+  "prices:write",
+  "prices:read",
+  "credentials:read",
+] as const;
 
 async function call<T = unknown>(path: string, init?: RequestInit, retryOn401 = true): Promise<T> {
   const base = await ccBaseUrl();
@@ -102,4 +110,39 @@ export const cc = {
     resourceType?: string;
     resourceId?: string;
   }) => call<{ id: string; title: string; dueOn: string }>("/api/integrations/reminders", { method: "POST", body: JSON.stringify(params) }),
+
+  // A6 Price Watcher — worker reads back the user's own BYOK key (CC owns the
+  // DEK; the key crosses the wire once per call, over the already-authenticated
+  // service-token channel). Returns null if the user has no key for that
+  // service; the activity treats that as a soft-skip.
+  getUserCredential: (userId: string, service: string) =>
+    call<{ label: string; key: string } | null>(
+      `/api/integrations/user-credentials/${encodeURIComponent(userId)}/${encodeURIComponent(service)}`
+    ).catch((err) => {
+      if (err instanceof Error && / 404/.test(err.message)) return null;
+      throw err;
+    }),
+
+  // Worker reports a snapshot (one price history row + mirror of latest on
+  // the parent). CC owns the write to be RLS-safe and to compute verdict.
+  // userId is the owning user — CC re-enters the tenant tx with it so RLS
+  // can enforce normally. The token's `prices:write` scope is the gate.
+  postPriceSnapshot: (watchId: string, body: {
+    userId: string;
+    price: number;
+    currency?: string;
+    title?: string | null;
+    imageUrl?: string | null;
+    sourceMeta?: Record<string, unknown>;
+  }) => call(`/api/integrations/price-watches/${encodeURIComponent(watchId)}/snapshot`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  }),
+
+  // A6 Phase 2.6 — list of watches due for the daily poll (every user in the
+  // service token's org that isn't paused and hasn't been checked recently).
+  dueWatches: (minHoursSince = 20) =>
+    call<Array<{ watchId: string; userId: string; source: string; externalId: string | null; url: string }>>(
+      `/api/integrations/price-watches/due?minHours=${minHoursSince}`
+    ),
 };

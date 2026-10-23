@@ -146,7 +146,9 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed
     return { trashed: 0, proposed: trashCandidates.length, ingestFailed };
   }
 
-  if (state === "rejected") {
+  const decision = state as "approved" | "rejected";
+
+  if (decision === "rejected") {
     await updateApprovalNotification(
       input.approvalRouteKey, refs,
       `❌ Rejected${approver ? ` by <@${approver}>` : ""} — nothing moved.`

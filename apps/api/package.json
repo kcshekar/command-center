@@ -8,6 +8,7 @@
     "@google-cloud/storage": "^8.0.1",
     "@slack/socket-mode": "^2.0.4",
     "@slack/web-api": "^7.7.0",
+    "@temporalio/client": "^1.11.0",
     "nodemailer": "^9.0.5",
     "puppeteer-core": "^25.9.0"
   },
