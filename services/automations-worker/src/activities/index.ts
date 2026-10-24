@@ -5,6 +5,9 @@ import { classifyEmail, extractExpense, extractBill, type Classification } from 
 import { parseExpenseEmail, type EmailInput } from "../parsers/index.js";
 
 export { fetchInitialPriceSnapshot, listDuePriceWatches } from "./price-watch.js";
+export { prepareTtdReminders } from "./ttd-prep.js";
+export { ingestHnTopStories, classifyNewsItem, draftAndPostNewsBrief } from "./news.js";
+export { ingestLearningReleases, classifyLessonItem, draftAndPostLearningDigest } from "./learning.js";
 
 // ─── Google reads ────────────────────────────────────────────────────────────
 

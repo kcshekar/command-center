@@ -91,7 +91,7 @@ export const promptRoutes = {
             (${ctx.orgId}::uuid, ${name}, ${description}, ${promptBody},
              ${textArrayLiteral(variables)}::text[],
              ${defaultModel}, ${defaultTemperature},
-             ${JSON.stringify(metadata)}::jsonb,
+             ${JSON.stringify(metadata)}::text::jsonb,
              ${ctx.userId}::uuid)
           RETURNING id, name, description,
                     body                AS "defaultBody",
@@ -182,7 +182,7 @@ export const promptRoutes = {
       }
       if (hasKey("metadata")) {
         const next = asMetadata(body.metadata);
-        await ctx.tx`UPDATE prompts SET metadata = ${JSON.stringify(next)}::jsonb, updated_at = now() WHERE name = ${name}`;
+        await ctx.tx`UPDATE prompts SET metadata = ${JSON.stringify(next)}::text::jsonb, updated_at = now() WHERE name = ${name}`;
         changed++;
       }
       if (changed === 0) {
@@ -249,7 +249,7 @@ export const promptRoutes = {
         VALUES
           (${ctx.orgId}::uuid, ${ctx.userId}::uuid, ${name},
            ${text}, ${defaultModel}, ${defaultTemperature},
-           ${JSON.stringify(metadata)}::jsonb, now())
+           ${JSON.stringify(metadata)}::text::jsonb, now())
         ON CONFLICT (user_id, prompt_name) DO UPDATE SET
           body                = EXCLUDED.body,
           default_model       = EXCLUDED.default_model,

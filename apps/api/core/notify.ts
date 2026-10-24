@@ -40,7 +40,7 @@ async function dispatchOne(
   if (channelType === "in_app") {
     const [row] = await tx`
       INSERT INTO notifications (org_id, recipient_user_id, route_key, text, blocks)
-      SELECT ${orgId}, u.id, ${routeKey}, ${args.text}, ${args.blocks ? JSON.stringify(args.blocks) : null}::jsonb
+      SELECT ${orgId}, u.id, ${routeKey}, ${args.text}, ${args.blocks ? JSON.stringify(args.blocks) : null}::text::jsonb
       FROM users u WHERE u.org_id = ${orgId}
       RETURNING id
     `;
@@ -84,7 +84,7 @@ export async function postApproval(
           org_id, recipient_user_id, route_key, text, blocks,
           is_approval, approval_action_id, approval_workflow_id
         )
-        SELECT ${orgId}, u.id, ${routeKey}, ${args.text}, ${JSON.stringify(args.blocks)}::jsonb,
+        SELECT ${orgId}, u.id, ${routeKey}, ${args.text}, ${JSON.stringify(args.blocks)}::text::jsonb,
                true, ${args.actionId}, ${args.workflowId}
         FROM users u WHERE u.org_id = ${orgId}
         LIMIT 1
@@ -111,7 +111,7 @@ export async function updateNotification(
       await tx`
         UPDATE notifications
         SET text = ${args.text},
-            blocks = ${args.blocks ? JSON.stringify(args.blocks) : null}::jsonb
+            blocks = ${args.blocks ? JSON.stringify(args.blocks) : null}::text::jsonb
         WHERE id = ${ref.ts} AND org_id = ${orgId}
       `;
       continue;

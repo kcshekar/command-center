@@ -27,7 +27,8 @@ export async function writeAudit(tx: SQL, ctx: AuthCtx, event: AuditEvent) {
     WITH cfg AS (SELECT set_config('app.current_org_id', ${ctx.orgId}, true) AS applied)
     INSERT INTO audit_log (org_id, actor_id, action, resource_type, resource_id, ip, metadata)
     SELECT ${ctx.orgId}, ${ctx.userId}, ${event.action}, ${event.resourceType},
-      ${event.resourceId ?? null}, ${event.ip ?? null}, ${JSON.stringify(event.metadata ?? {})}
+      ${event.resourceId ?? null}, ${event.ip ?? null},
+      ${JSON.stringify(event.metadata ?? {})}::text::jsonb
     FROM cfg
   `;
 }

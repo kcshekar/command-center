@@ -6,6 +6,7 @@ import { notify, postApproval, updateNotification } from "../../core/notify";
 import { textArrayLiteral } from "../../core/pg-array";
 import { withTenantTx, sql } from "../../core/db";
 import { getUserCredentialsDek } from "../../core/user-credentials";
+import { getPilgrimIdentitiesDek, type PilgrimPii } from "../../core/pilgrim-identities";
 import { log } from "../../core/log";
 
 type Verdict = "target" | "buy" | "fair" | "wait";
@@ -221,7 +222,7 @@ export const integrationRoutes = {
           ${textArrayLiteral(scopesArr)}::text[],
           ${status || "active"},
           ${lastRefreshedAt ? new Date(lastRefreshedAt) : null},
-          ${JSON.stringify(metadataVal)}::jsonb
+          ${JSON.stringify(metadataVal)}::text::jsonb
         )
         ON CONFLICT (org_id, service, user_id, label) DO UPDATE SET
           scopes = EXCLUDED.scopes,
@@ -327,7 +328,7 @@ export const integrationRoutes = {
 
           await tx`
             INSERT INTO price_history (watch_id, price, source_meta)
-            VALUES (${watchId}::uuid, ${price}, ${JSON.stringify(sourceMeta)}::jsonb)
+            VALUES (${watchId}::uuid, ${price}, ${JSON.stringify(sourceMeta)}::text::jsonb)
           `;
 
           // Percentile over the last 90 days — the just-inserted sample is
@@ -452,6 +453,281 @@ export const integrationRoutes = {
         action: "prompt:resolve_via_integration",
         resourceType: "prompt",
         metadata: { name, targetUserId, hasOverride: row.hasOverride, tokenId: ctx.tokenId },
+      });
+
+      return Response.json(row);
+    }),
+  },
+
+  // A10.3 — TTD prep. Three endpoints the ttdPrepWorkflow uses in sequence:
+  //   due            → list imminent windows across every user in the org
+  //   pilgrim list   → decrypted pilgrim pack for a target user
+  //   notified       → bulk mark windows as pinged so we don't re-ping
+  // All three bypass per-user RLS via SECURITY DEFINER helpers / target-user
+  // withTenantTx; scope checks are the gate.
+
+  "/api/integrations/ttd-windows/due": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "ttd:read");
+      const url = new URL(req.url);
+      const withinHours   = Math.max(1,  Math.min(168, Number(url.searchParams.get("withinHours")   ?? 48)));
+      const renotifyHours = Math.max(1,  Math.min(168, Number(url.searchParams.get("renotifyHours") ?? 24)));
+      const releaseCutoff  = new Date(Date.now() + withinHours   * 3600 * 1000);
+      const renotifyCutoff = new Date(Date.now() - renotifyHours * 3600 * 1000);
+      // to_jsonb cast → JS array; Bun.SQL otherwise hands back the raw
+      // Postgres array literal "{a,b,c}" as a string.
+      const rows = await sql`
+        SELECT window_id                   AS "windowId",
+               user_id                     AS "userId",
+               darshan_date                AS "darshanDate",
+               slot_type                   AS "slotType",
+               release_at                  AS "releaseAt",
+               to_jsonb(pilgrim_ids)       AS "pilgrimIds",
+               note,
+               booking_ref                 AS "bookingRef",
+               last_notified_at            AS "lastNotifiedAt"
+        FROM list_due_ttd_windows(${ctx.orgId}::uuid, ${releaseCutoff}, ${renotifyCutoff})
+      `;
+      return Response.json(rows);
+    }),
+  },
+
+  "/api/integrations/pilgrim-identities": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "pilgrim:read");
+      const url = new URL(req.url);
+      const targetUserId = url.searchParams.get("userId");
+      if (!targetUserId || !UUID_RE.test(targetUserId)) {
+        throw new HttpError(400, "userId query param (uuid) is required");
+      }
+      const idsParam = url.searchParams.get("ids");
+      const idsFilter = idsParam
+        ? idsParam.split(",").map((s) => s.trim()).filter((s) => UUID_RE.test(s))
+        : null;
+
+      const dek = getPilgrimIdentitiesDek();
+      const rows = await withTenantTx(
+        { orgId: ctx.orgId, userId: targetUserId, role: ctx.role },
+        async (tx) => {
+          const base = await tx`
+            SELECT id, full_name AS "fullName", gender,
+                   id_type AS "idType", relationship, note, metadata,
+                   CASE WHEN pii_enc IS NULL
+                        THEN NULL
+                        ELSE pgp_sym_decrypt(pii_enc, ${dek})::text
+                   END AS "piiJson"
+            FROM pilgrim_identities
+            ORDER BY (relationship = 'self') DESC, created_at ASC
+          `;
+          return base;
+        }
+      );
+      const shaped = rows.map((r: Record<string, unknown>) => {
+        const { piiJson, ...rest } = r;
+        const pii: PilgrimPii = piiJson ? JSON.parse(String(piiJson)) : {};
+        return { ...rest, pii };
+      });
+      const filtered = idsFilter ? shaped.filter((r: { id: string }) => idsFilter.includes(r.id)) : shaped;
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "pilgrim_identity:read_via_integration",
+        resourceType: "pilgrim_identity",
+        metadata: { targetUserId, returned: filtered.length, tokenId: ctx.tokenId },
+      });
+
+      return Response.json(filtered);
+    }),
+  },
+
+  "/api/integrations/ttd-windows/notified": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "ttd:read");
+      const body = (await req.json().catch(() => ({}))) as { ids?: unknown };
+      if (!Array.isArray(body.ids)) throw new HttpError(400, "ids: uuid[] is required");
+      const ids = body.ids
+        .filter((x): x is string => typeof x === "string" && UUID_RE.test(x));
+      if (ids.length === 0) return Response.json({ updated: 0 });
+
+      const [row] = await sql`
+        SELECT mark_ttd_windows_notified(${ctx.orgId}::uuid, ${textArrayLiteral(ids)}::uuid[]) AS "updated"
+      `;
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "ttd_window:notified_via_integration",
+        resourceType: "ttd_window",
+        metadata: { count: row.updated, tokenId: ctx.tokenId },
+      });
+
+      return Response.json({ updated: row.updated });
+    }),
+  },
+
+  // A8.1 — list a user's enabled learning goals. Worker iterates these and
+  // calls the matching source fetcher (GitHub Releases, dev.to tag feed, RSS).
+  "/api/integrations/learning-goals": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "learning:read");
+      const url = new URL(req.url);
+      const targetUserId = url.searchParams.get("userId");
+      if (!targetUserId || !UUID_RE.test(targetUserId)) {
+        throw new HttpError(400, "userId query param (uuid) is required");
+      }
+      const rows = await withTenantTx(
+        { orgId: ctx.orgId, userId: targetUserId, role: ctx.role },
+        async (tx) => tx`
+          SELECT id,
+                 source_kind AS "sourceKind",
+                 target, weight, note, metadata
+          FROM learning_goals
+          WHERE enabled = true
+          ORDER BY weight DESC, created_at ASC
+        `
+      );
+      return Response.json(rows);
+    }),
+  },
+
+  // A1.1 — knowledge_items create/list for workers. Target user in body/URL;
+  // CC re-enters withTenantTx scoped to them so RLS enforces normally. The
+  // `knowledge:write` / `knowledge:read` scopes are the gates.
+  "/api/integrations/knowledge-items": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "knowledge:write");
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof body.userId !== "string" || !UUID_RE.test(body.userId)) {
+        throw new HttpError(400, "userId (uuid) is required");
+      }
+      const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : null;
+      if (!title) throw new HttpError(400, "title is required");
+      const type = typeof body.type === "string" && body.type.trim() ? body.type.trim() : "note";
+      const text = typeof body.body === "string" && body.body.trim() ? body.body.trim() : null;
+      const tags = Array.isArray(body.tags) ? body.tags.filter((x): x is string => typeof x === "string") : [];
+      const source = typeof body.source === "string" && body.source.trim() ? body.source.trim() : "worker";
+      const sourceId = typeof body.sourceId === "string" && body.sourceId.trim() ? body.sourceId.trim() : null;
+      const metadata = body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+        ? body.metadata as Record<string, unknown> : {};
+
+      // Proper upsert via the partial unique index, so a re-ingest doesn't
+      // throw (and poison the transaction). xmax=0 → fresh insert; non-zero
+      // → ON CONFLICT path, i.e. existing row reused/updated.
+      const result = await withTenantTx(
+        { orgId: ctx.orgId, userId: body.userId, role: ctx.role },
+        async (tx) => {
+          const [row] = await tx`
+            INSERT INTO knowledge_items
+              (org_id, user_id, type, title, body, tags, source, source_id, metadata)
+            VALUES
+              (${ctx.orgId}::uuid, ${body.userId}::uuid,
+               ${type}, ${title}, ${text},
+               ${textArrayLiteral(tags)}::text[],
+               ${source}, ${sourceId},
+               ${JSON.stringify(metadata)}::text::jsonb)
+            ON CONFLICT (user_id, source, source_id) WHERE source_id IS NOT NULL
+            DO UPDATE SET
+              title      = EXCLUDED.title,
+              body       = EXCLUDED.body,
+              tags       = EXCLUDED.tags,
+              metadata   = knowledge_items.metadata || EXCLUDED.metadata,
+              updated_at = now()
+            RETURNING id, type, title, source,
+                      source_id AS "sourceId",
+                      created_at AS "createdAt",
+                      (xmax = 0) AS "created"
+          `;
+          return { row, created: Boolean(row.created) };
+        }
+      );
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "knowledge_item:create_via_integration",
+        resourceType: "knowledge_item",
+        resourceId: String(result.row.id),
+        metadata: { targetUserId: body.userId, type, source, sourceId, created: result.created, tokenId: ctx.tokenId },
+      });
+
+      return Response.json(result.row, { status: result.created ? 201 : 200 });
+    }),
+
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "knowledge:read");
+      const url = new URL(req.url);
+      const targetUserId = url.searchParams.get("userId");
+      if (!targetUserId || !UUID_RE.test(targetUserId)) {
+        throw new HttpError(400, "userId query param (uuid) is required");
+      }
+      const source = url.searchParams.get("source");
+      const type = url.searchParams.get("type");
+      const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") ?? 100)));
+
+      const rows = await withTenantTx(
+        { orgId: ctx.orgId, userId: targetUserId, role: ctx.role },
+        async (tx) => tx`
+          SELECT id, type, title, source,
+                 source_id AS "sourceId",
+                 metadata,
+                 created_at AS "createdAt"
+          FROM knowledge_items
+          WHERE (${source}::text IS NULL OR source = ${source})
+            AND (${type}::text   IS NULL OR type   = ${type})
+          ORDER BY created_at DESC
+          LIMIT ${limit}
+        `
+      );
+      return Response.json(rows);
+    }),
+  },
+
+  // A1.2 — merge new metadata keys into a knowledge_item (classifier output
+  // etc). userId in body for the same reason as POST — target-user re-enter
+  // under withTenantTx. tags, if provided, replace the array entirely.
+  "/api/integrations/knowledge-items/:id/metadata": {
+    PATCH: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "knowledge:write");
+      const { id } = req.params;
+      if (!UUID_RE.test(id)) throw new HttpError(400, "id must be a uuid");
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof body.userId !== "string" || !UUID_RE.test(body.userId)) {
+        throw new HttpError(400, "userId (uuid) is required");
+      }
+      const patch = body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+        ? body.metadata as Record<string, unknown> : null;
+      const tags = Array.isArray(body.tags)
+        ? body.tags.filter((x): x is string => typeof x === "string")
+        : null;
+      if (!patch && !tags) throw new HttpError(400, "metadata or tags is required");
+
+      const row = await withTenantTx(
+        { orgId: ctx.orgId, userId: body.userId, role: ctx.role },
+        async (tx) => {
+          if (patch) {
+            await tx`
+              UPDATE knowledge_items
+              SET metadata = metadata || ${JSON.stringify(patch)}::text::jsonb,
+                  updated_at = now()
+              WHERE id = ${id}::uuid
+            `;
+          }
+          if (tags) {
+            await tx`
+              UPDATE knowledge_items
+              SET tags = ${textArrayLiteral(tags)}::text[], updated_at = now()
+              WHERE id = ${id}::uuid
+            `;
+          }
+          const [r] = await tx`
+            SELECT id, title, tags, metadata, updated_at AS "updatedAt"
+            FROM knowledge_items WHERE id = ${id}::uuid
+          `;
+          return r ?? null;
+        }
+      );
+      if (!row) throw new HttpError(404, "knowledge item not found");
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "knowledge_item:metadata_merge_via_integration",
+        resourceType: "knowledge_item",
+        resourceId: id,
+        metadata: { targetUserId: body.userId, patchedKeys: patch ? Object.keys(patch) : [], tagsReplaced: Boolean(tags), tokenId: ctx.tokenId },
       });
 
       return Response.json(row);

@@ -24,6 +24,9 @@ import { userCredentialRoutes } from "./modules/user-credentials/routes";
 import { priceWatchRoutes } from "./modules/price-watches/routes";
 import { knowledgeItemRoutes } from "./modules/knowledge-items/routes";
 import { promptRoutes } from "./modules/prompts/routes";
+import { pilgrimIdentityRoutes } from "./modules/pilgrim-identities/routes";
+import { ttdWindowRoutes } from "./modules/ttd-windows/routes";
+import { learningGoalRoutes } from "./modules/learning-goals/routes";
 import { automationRoutes } from "./modules/automations/routes";
 import { integrationRoutes } from "./modules/integrations/routes";
 
@@ -244,6 +247,9 @@ Bun.serve({
     ...priceWatchRoutes,
     ...knowledgeItemRoutes,
     ...promptRoutes,
+    ...pilgrimIdentityRoutes,
+    ...ttdWindowRoutes,
+    ...learningGoalRoutes,
     ...automationRoutes,
     ...integrationRoutes,
   },

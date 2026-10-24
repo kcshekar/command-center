@@ -73,7 +73,7 @@ export const userCredentialRoutes = {
            ${label},
            pgp_sym_encrypt(${rawKey}, ${dek}),
            ${prefix},
-           ${JSON.stringify(metadata)}::jsonb,
+           ${JSON.stringify(metadata)}::text::jsonb,
            now())
         ON CONFLICT (user_id, service, label) DO UPDATE SET
           key_enc    = EXCLUDED.key_enc,

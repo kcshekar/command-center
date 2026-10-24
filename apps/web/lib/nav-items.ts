@@ -1,4 +1,4 @@
-import { KeyRound, Lock, BookOpen, Wallet, BellRing, Bot, Key, Zap, Tag } from "lucide-react";
+import { KeyRound, Lock, BookOpen, Wallet, BellRing, Bot, Key, Zap, Tag, Users, GraduationCap } from "lucide-react";
 
 // Single source of truth for both the sidebar and the command palette so
 // adding a section never means updating two lists.
@@ -12,4 +12,6 @@ export const NAV_ITEMS = [
   { href: "/tokens", label: "Service Tokens", icon: Key },
   { href: "/agent-automations", label: "Automations", icon: Zap },
   { href: "/price-watcher", label: "Price Watcher", icon: Tag },
+  { href: "/pilgrim", label: "TTD / Pilgrim Pack", icon: Users },
+  { href: "/learning", label: "Learning Digest", icon: GraduationCap },
 ];

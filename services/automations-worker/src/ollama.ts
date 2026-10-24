@@ -125,7 +125,23 @@ Body: ${snippet}`;
   return parsed as ExtractedBill;
 }
 
-async function ollamaJson(prompt: string, schema?: unknown): Promise<any> {
+// Free-form text generation (no JSON mode). For prose output like LinkedIn
+// drafts where a schema would just get in the way.
+export async function ollamaText(prompt: string, options: { temperature?: number } = {}): Promise<string> {
+  const res = await fetch(`${HOST}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: MODEL, prompt, stream: false,
+      options: { temperature: options.temperature ?? 0.7 },
+    }),
+  });
+  if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+  const data = await res.json();
+  return String(data.response ?? "").trim();
+}
+
+export async function ollamaJson(prompt: string, schema?: unknown): Promise<any> {
   const res = await fetch(`${HOST}/api/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

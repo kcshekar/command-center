@@ -17,6 +17,12 @@ const ALL_SCOPES = [
   "prices:write",
   "prices:read",
   "credentials:read",
+  "pilgrim:read",
+  "ttd:read",
+  "knowledge:read",
+  "knowledge:write",
+  "prompts:read",
+  "learning:read",
 ] as const;
 
 async function call<T = unknown>(path: string, init?: RequestInit, retryOn401 = true): Promise<T> {
@@ -145,4 +151,88 @@ export const cc = {
     call<Array<{ watchId: string; userId: string; source: string; externalId: string | null; url: string }>>(
       `/api/integrations/price-watches/due?minHours=${minHoursSince}`
     ),
+
+  // A10.3 — TTD prep. Three sibling calls: imminent windows, pilgrim pack
+  // for a user, bulk notified-mark.
+  dueTtdWindows: (withinHours = 48, renotifyHours = 24) =>
+    call<Array<{
+      windowId: string; userId: string; darshanDate: string; slotType: string;
+      releaseAt: string; pilgrimIds: string[]; note: string | null;
+      bookingRef: string | null; lastNotifiedAt: string | null;
+    }>>(`/api/integrations/ttd-windows/due?withinHours=${withinHours}&renotifyHours=${renotifyHours}`),
+
+  pilgrimsForUser: (userId: string, ids?: string[]) => {
+    const q = new URLSearchParams({ userId });
+    if (ids && ids.length) q.set("ids", ids.join(","));
+    return call<Array<{
+      id: string; fullName: string; gender: string | null; idType: string | null;
+      relationship: string; note: string | null; metadata: Record<string, unknown>;
+      pii: { dob?: string; idNumber?: string; phone?: string; email?: string; address?: string };
+    }>>(`/api/integrations/pilgrim-identities?${q.toString()}`);
+  },
+
+  markTtdWindowsNotified: (ids: string[]) =>
+    call<{ updated: number }>(`/api/integrations/ttd-windows/notified`, {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+
+  // A1.1 — knowledge_items create/list. Idempotent via (user_id, source,
+  // sourceId): CC returns 200 with the existing row on collision, 201 for
+  // a fresh insert. Worker treats both as success.
+  createKnowledgeItem: (body: {
+    userId: string;
+    type?: string;
+    title: string;
+    body?: string;
+    tags?: string[];
+    source?: string;
+    sourceId?: string | null;
+    metadata?: Record<string, unknown>;
+  }) => call<{
+    id: string; type: string; title: string; source: string;
+    sourceId: string | null; createdAt: string;
+  }>(`/api/integrations/knowledge-items`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  }),
+
+  listKnowledgeItems: (params: { userId: string; source?: string; type?: string; limit?: number }) => {
+    const q = new URLSearchParams({ userId: params.userId });
+    if (params.source) q.set("source", params.source);
+    if (params.type)   q.set("type", params.type);
+    if (params.limit)  q.set("limit", String(params.limit));
+    return call<Array<{
+      id: string; type: string; title: string; source: string;
+      sourceId: string | null; metadata: Record<string, unknown>; createdAt: string;
+    }>>(`/api/integrations/knowledge-items?${q.toString()}`);
+  },
+
+  patchKnowledgeItemMetadata: (id: string, body: {
+    userId: string;
+    metadata?: Record<string, unknown>;
+    tags?: string[];
+  }) => call(`/api/integrations/knowledge-items/${encodeURIComponent(id)}/metadata`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  }),
+
+  // A1.2 — effective prompt (user override merged over org default). Returns
+  // null on 404 so the activity can fall back to a hardcoded prompt baked
+  // into the worker without failing the whole run.
+  // A8.1 — enabled learning goals for a user.
+  listLearningGoals: (userId: string) =>
+    call<Array<{
+      id: string; sourceKind: "github_release" | "dev_to_tag" | "rss";
+      target: string; weight: number; note: string | null;
+      metadata: Record<string, unknown>;
+    }>>(`/api/integrations/learning-goals?userId=${encodeURIComponent(userId)}`),
+
+  getEffectivePrompt: (name: string, userId: string) =>
+    call<{ body: string; model: string | null; temperature: number | null; hasOverride: boolean } | null>(
+      `/api/integrations/prompts/${encodeURIComponent(name)}?userId=${encodeURIComponent(userId)}`
+    ).catch((err) => {
+      if (err instanceof Error && / 404/.test(err.message)) return null;
+      throw err;
+    }),
 };

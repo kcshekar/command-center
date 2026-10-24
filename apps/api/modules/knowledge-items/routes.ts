@@ -107,7 +107,7 @@ export const knowledgeItemRoutes = {
              ${source}, ${sourceId},
              ${textArrayLiteral(related)}::uuid[],
              ${shared},
-             ${JSON.stringify(metadata)}::jsonb)
+             ${JSON.stringify(metadata)}::text::jsonb)
           RETURNING id,
                     user_id          AS "userId",
                     type, title, body, tags, source,
@@ -232,7 +232,7 @@ export const knowledgeItemRoutes = {
       }
       if (hasKey("metadata")) {
         const metadata = asMetadata(body.metadata);
-        await ctx.tx`UPDATE knowledge_items SET metadata = ${JSON.stringify(metadata)}::jsonb, updated_at = now() WHERE id = ${id}::uuid`;
+        await ctx.tx`UPDATE knowledge_items SET metadata = ${JSON.stringify(metadata)}::text::jsonb, updated_at = now() WHERE id = ${id}::uuid`;
         changed++;
       }
       if (changed === 0) {

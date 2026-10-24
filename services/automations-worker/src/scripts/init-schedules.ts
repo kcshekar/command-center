@@ -15,6 +15,10 @@ async function main() {
   const namespace = process.env.TEMPORAL_NAMESPACE ?? "personal";
   const taskQueue = process.env.TEMPORAL_TASK_QUEUE ?? "personal-automations";
   const digest = process.env.SLACK_ROUTE_DIGEST ?? "automations.digest";
+  const newsRoute = process.env.NEWS_ALERT_ROUTE_KEY ?? digest;
+  // Worker's own pool lives in the automations DB, not commandcenter where
+  // users lives — so pass the uuid in via env rather than resolve by email here.
+  const newsUserId = process.env.NEWS_USER_ID;
 
   const approval = process.env.SLACK_ROUTE_APPROVAL ?? "automations.approval";
 
@@ -78,6 +82,52 @@ async function main() {
     policies: commonPolicies,
     timezone: scheduleTimezone,
   });
+
+  // A10 TTD prep — every 6h. Scans ttd_windows for anything whose booking
+  // release is imminent and Slacks the pilgrim pack.
+  await upsertSchedule(client, {
+    scheduleId: "ttd-prep-every-6h",
+    cron: "0 */6 * * *",
+    workflowType: "ttdPrepWorkflow",
+    args: [{}],
+    taskQueue,
+    policies: commonPolicies,
+    timezone: scheduleTimezone,
+  });
+
+  // A8 weekly learning digest — Mon 08:00 IST (catalog default).
+  // Reuses NEWS_USER_ID — same primary user. Split envs when we need per-user.
+  if (newsUserId) {
+    await upsertSchedule(client, {
+      scheduleId: "a8-learning-weekly",
+      cron: "0 8 * * 1",
+      workflowType: "learningIngestWorkflow",
+      args: [{ userId: newsUserId, daysBack: 7, perRepo: 5, classify: true, draft: true, routeKey: process.env.LEARNING_ALERT_ROUTE_KEY ?? digest }],
+      taskQueue,
+      policies: commonPolicies,
+      timezone: scheduleTimezone,
+    });
+  } else {
+    console.log("skipping a8-learning-weekly schedule (NEWS_USER_ID not set)");
+  }
+
+  // A1 tech news draft — Mon + Thu at 09:00 IST (catalog default).
+  // Fetches HN top, classifies, drafts a LinkedIn-ready post, Slacks it.
+  // Set NEWS_USER_ID in services/automations-worker/.env to the owning user's
+  // uuid; skipped if unset (so the init script stays safe to run anywhere).
+  if (newsUserId) {
+    await upsertSchedule(client, {
+      scheduleId: "a1-news-mon-thu",
+      cron: "0 9 * * 1,4",
+      workflowType: "newsIngestWorkflow",
+      args: [{ userId: newsUserId, limit: 15, classify: true, draft: true, minImportance: 4, routeKey: newsRoute }],
+      taskQueue,
+      policies: commonPolicies,
+      timezone: scheduleTimezone,
+    });
+  } else {
+    console.log("skipping a1-news-mon-thu schedule (NEWS_USER_ID not set)");
+  }
 
   await connection.close();
 }
