@@ -111,6 +111,10 @@ async function handleAction(orgId: string, payload: any): Promise<void> {
       approverSlackId,
       messageRef,
       orgId,
+      // Per-workflow update name — the button carries it (A5.2 reply uses
+      // "submitReplyApproval"; triage trash's omission falls back to
+      // "submitApproval" on the worker side).
+      updateName: (parsed as { updateName?: string }).updateName,
     }),
   });
   if (!res.ok) throw new Error(`worker callback ${res.status}: ${await res.text()}`);

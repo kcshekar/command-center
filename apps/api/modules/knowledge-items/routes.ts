@@ -2,6 +2,10 @@ import { tenantRoute } from "../../core/router";
 import { HttpError } from "../../core/auth";
 import { writeAudit } from "../../core/audit";
 import { textArrayLiteral } from "../../core/pg-array";
+import { temporalClient } from "../../core/temporal";
+import { log } from "../../core/log";
+
+const TEMPORAL_TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE ?? "personal-automations";
 
 // Phase 1.5 — CRUD + text search for knowledge_items.
 //
@@ -275,6 +279,48 @@ export const knowledgeItemRoutes = {
       });
 
       return new Response(null, { status: 204 });
+    }),
+  },
+
+  // A7 — turn a knowledge_item into a GitHub PR on a target repo. Requires
+  // the user to have connected GitHub via Connected Accounts first.
+  "/api/knowledge-items/:id/open-pr": {
+    POST: tenantRoute(async (req, ctx) => {
+      const { id } = req.params;
+      if (!UUID_RE.test(id)) throw new HttpError(400, "id must be a uuid");
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      const repo = typeof body.repo === "string" && body.repo.trim() ? body.repo.trim() : null;
+      if (!repo) throw new HttpError(400, "repo (owner/repo) is required");
+      if (!/^[A-Za-z0-9][\w.-]*\/[\w.-]+$/.test(repo)) throw new HttpError(400, "repo must be 'owner/repo'");
+      const path = typeof body.path === "string" && body.path.trim() ? body.path.trim() : "README.md";
+      const prTitle = typeof body.prTitle === "string" && body.prTitle.trim() ? body.prTitle.trim() : undefined;
+      const prBody  = typeof body.prBody  === "string" && body.prBody.trim()  ? body.prBody.trim()  : undefined;
+
+      const [exists] = await ctx.tx`SELECT 1 FROM knowledge_items WHERE id = ${id}::uuid`;
+      if (!exists) throw new HttpError(404, "knowledge item not found");
+
+      const workflowId = `github-pr-${id}-${Date.now()}`;
+      try {
+        const client = await temporalClient();
+        await client.workflow.start("githubPrFromKnowledgeItemWorkflow", {
+          taskQueue: TEMPORAL_TASK_QUEUE,
+          workflowId,
+          args: [{ userId: ctx.userId, knowledgeItemId: id, repo, path, prTitle, prBody }],
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn("github pr workflow start failed", { itemId: id, err: msg });
+        throw new HttpError(502, `Temporal: ${msg.slice(0, 160)}`);
+      }
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "knowledge_item:open_pr_requested",
+        resourceType: "knowledge_item",
+        resourceId: id,
+        metadata: { workflowId, repo, path },
+      });
+
+      return Response.json({ ok: true, workflowId });
     }),
   },
 };

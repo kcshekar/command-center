@@ -23,6 +23,12 @@ const ALL_SCOPES = [
   "knowledge:write",
   "prompts:read",
   "learning:read",
+  "profile:read",
+  "jobs:read",
+  "jobs:write",
+  "interviews:read",
+  "interviews:write",
+  "events:write",
 ] as const;
 
 async function call<T = unknown>(path: string, init?: RequestInit, retryOn401 = true): Promise<T> {
@@ -120,9 +126,10 @@ export const cc = {
   // A6 Price Watcher — worker reads back the user's own BYOK key (CC owns the
   // DEK; the key crosses the wire once per call, over the already-authenticated
   // service-token channel). Returns null if the user has no key for that
-  // service; the activity treats that as a soft-skip.
+  // service; the activity treats that as a soft-skip. `metadata` carries
+  // non-secret context (e.g. Adzuna app_id).
   getUserCredential: (userId: string, service: string) =>
-    call<{ label: string; key: string } | null>(
+    call<{ label: string; key: string; metadata: Record<string, unknown> } | null>(
       `/api/integrations/user-credentials/${encodeURIComponent(userId)}/${encodeURIComponent(service)}`
     ).catch((err) => {
       if (err instanceof Error && / 404/.test(err.message)) return null;
@@ -208,6 +215,25 @@ export const cc = {
     }>>(`/api/integrations/knowledge-items?${q.toString()}`);
   },
 
+  getKnowledgeItemFull: (id: string, userId: string) =>
+    call<{
+      id: string; type: string; title: string; body: string | null;
+      tags: string[]; source: string; sourceId: string | null;
+      metadata: Record<string, unknown>;
+      createdAt: string; updatedAt: string;
+    }>(`/api/integrations/knowledge-items/${encodeURIComponent(id)}?userId=${encodeURIComponent(userId)}`),
+
+  listUnembeddedKnowledgeItems: (limit = 10) =>
+    call<Array<{ id: string; userId: string; title: string; body: string | null; type: string }>>(
+      `/api/integrations/knowledge-items/unembedded?limit=${limit}`
+    ),
+
+  patchKnowledgeItemEmbedding: (id: string, body: { userId: string; embedding: number[] }) =>
+    call(`/api/integrations/knowledge-items/${encodeURIComponent(id)}/embedding`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
   patchKnowledgeItemMetadata: (id: string, body: {
     userId: string;
     metadata?: Record<string, unknown>;
@@ -220,6 +246,103 @@ export const cc = {
   // A1.2 — effective prompt (user override merged over org default). Returns
   // null on 404 so the activity can fall back to a hardcoded prompt baked
   // into the worker without failing the whole run.
+  // A2.2 — profile + job_lead integration helpers.
+  getUserProfile: (userId: string) =>
+    call<null | {
+      headline: string | null; yearsExp: number | null; location: string | null;
+      remotePref: string; minSalaryLpa: number | null; currency: string;
+      skills: string[]; keywords: string[]; antiKeywords: string[];
+      bio: string | null; metadata: Record<string, unknown>;
+    }>(`/api/integrations/user-profile?userId=${encodeURIComponent(userId)}`),
+
+  // SSE push — emit a user-scoped event the UI can react to. Best-effort:
+  // call sites should not await / propagate failures.
+  emitEvent: (body: { userId: string; type: string; payload?: Record<string, unknown> }) =>
+    call(`/api/integrations/events`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // A4 — read sessions for the calendar matcher.
+  listInterviewSessions: (userId: string) =>
+    call<Array<{ id: string; company: string; role: string }>>(
+      `/api/integrations/interview-sessions?userId=${encodeURIComponent(userId)}`
+    ),
+
+  // A4 — upsert a round discovered from Google Calendar.
+  upsertCalendarInterviewRound: (body: {
+    userId: string; sessionId: string; calendarEventId: string;
+    kind: string; scheduledAt: string;
+    durationMin?: number; interviewer?: string; notes?: string;
+  }) => call<{ id: string; created: boolean }>(
+    `/api/integrations/interview-rounds/from-calendar`,
+    { method: "POST", body: JSON.stringify(body) }
+  ),
+
+  // A4 — upcoming interview rounds + bulk notified-mark.
+  dueInterviewRounds: (withinHours = 24, renotifyHours = 24) =>
+    call<Array<{
+      roundId: string; sessionId: string; userId: string;
+      kind: string; scheduledAt: string;
+      durationMin: number | null; interviewer: string | null;
+      notes: string | null;
+      company: string; role: string;
+      lastNotifiedAt: string | null;
+    }>>(`/api/integrations/interview-rounds/due?withinHours=${withinHours}&renotifyHours=${renotifyHours}`),
+
+  markInterviewRoundsNotified: (ids: string[]) =>
+    call<{ updated: number }>(`/api/integrations/interview-rounds/notified`, {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+
+  // A3.prep — fetch a single job_lead for the research step.
+  getJobLead: (id: string, userId: string) =>
+    call<{
+      id: string; source: string; sourceId: string | null;
+      title: string; company: string | null; location: string | null; url: string;
+      salaryMin: number | null; salaryMax: number | null;
+      currency: string | null; salaryPeriod: string | null;
+      description: string | null; postedAt: string | null;
+      score: number | null; scoreReason: string | null;
+    }>(`/api/integrations/job-leads/${encodeURIComponent(id)}?userId=${encodeURIComponent(userId)}`),
+
+  // A3.prep — upsert the interview_session (idempotent per source_job_lead_id).
+  upsertInterviewSession: (body: {
+    userId: string;
+    company: string;
+    role: string;
+    sourceJobLeadId?: string;
+    notes?: string;
+    metadata?: Record<string, unknown>;
+  }) => call<{
+    id: string; company: string; role: string;
+    sourceJobLeadId: string | null;
+    status: string; createdAt: string;
+  }>(`/api/integrations/interview-sessions`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  }),
+
+  scoreJobLead: (id: string, body: { userId: string; score: number; reason?: string }) =>
+    call(`/api/integrations/job-leads/${encodeURIComponent(id)}/score`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  upsertJobLead: (body: {
+    userId: string; source: string; sourceId: string;
+    title: string; url: string;
+    company?: string | null; location?: string | null;
+    salaryMin?: number | null; salaryMax?: number | null;
+    currency?: string | null; salaryPeriod?: string | null;
+    description?: string | null; postedAt?: string | null;
+    metadata?: Record<string, unknown>;
+  }) => call<{ id: string; sourceId: string; title: string; created: boolean }>(
+    `/api/integrations/job-leads`,
+    { method: "POST", body: JSON.stringify(body) }
+  ),
+
   // A8.1 — enabled learning goals for a user.
   listLearningGoals: (userId: string) =>
     call<Array<{

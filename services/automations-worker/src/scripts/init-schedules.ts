@@ -4,7 +4,10 @@ import { Client, Connection, ScheduleOverlapPolicy } from "@temporalio/client";
 // present. Run once after deploying; safe to re-run.
 
 async function main() {
-  const userEmail = process.argv[2];
+  // pnpm's `--` separator leaks through to process.argv as a literal "--"
+  // arg, so look up the first thing that smells like an email instead of
+  // trusting argv[2].
+  const userEmail = process.argv.slice(2).find((a) => /@/.test(a));
   const skipTriage = process.argv.includes("--skip-triage");
   if (!userEmail) {
     console.error("usage: pnpm schedules:init -- <user@gmail.com> [--skip-triage]");
@@ -61,7 +64,7 @@ async function main() {
       scheduleId: "inbox-triage-every-15m",
       cron: "*/15 * * * *",
       workflowType: "inboxTriageWorkflow",
-      args: [{ userEmail, digestRouteKey: digest, approvalRouteKey: approval }],
+      args: [{ userEmail, digestRouteKey: digest, approvalRouteKey: approval, userId: newsUserId }],
       taskQueue,
       policies: commonPolicies,
       timezone: scheduleTimezone,
@@ -110,6 +113,92 @@ async function main() {
   } else {
     console.log("skipping a8-learning-weekly schedule (NEWS_USER_ID not set)");
   }
+
+  // A2 daily job feed — 09:00 + 18:00 IST (catalog default: cron:0 9,18 * * *).
+  // Uses NEWS_USER_ID as the owning user, same as A1/A8.
+  if (newsUserId) {
+    await upsertSchedule(client, {
+      scheduleId: "a2-jobs-daily",
+      cron: "0 9,18 * * *",
+      workflowType: "jobsIngestWorkflow",
+      args: [{ userId: newsUserId, resultsPerPage: 25, classify: true, draft: true, minScore: 4, routeKey: process.env.JOBS_ALERT_ROUTE_KEY ?? digest }],
+      taskQueue,
+      policies: commonPolicies,
+      timezone: scheduleTimezone,
+    });
+  } else {
+    console.log("skipping a2-jobs-daily schedule (NEWS_USER_ID not set)");
+  }
+
+  // A7 monthly profile refresh — 1st of month at 10:00 IST (catalog default).
+  // Pulls recent engagement + current profile, drafts LinkedIn/README/resume.
+  if (newsUserId) {
+    await upsertSchedule(client, {
+      scheduleId: "a7-profile-monthly",
+      cron: "0 10 1 * *",
+      workflowType: "profileRefreshWorkflow",
+      args: [{ userId: newsUserId, recentDays: 30, routeKey: process.env.PROFILE_ALERT_ROUTE_KEY ?? digest }],
+      taskQueue,
+      policies: commonPolicies,
+      timezone: scheduleTimezone,
+    });
+  } else {
+    console.log("skipping a7-profile-monthly schedule (NEWS_USER_ID not set)");
+  }
+
+  // Pgvector embedder — hourly sweep. Picks up to N unembedded knowledge_items
+  // across all users in the org and runs them through OpenAI's embedding
+  // endpoint using each user's own BYOK key. Silently skips users without one.
+  await upsertSchedule(client, {
+    scheduleId: "knowledge-embedder-hourly",
+    cron: "0 * * * *",
+    workflowType: "knowledgeEmbedderWorkflow",
+    args: [{ limit: 20 }],
+    taskQueue,
+    policies: commonPolicies,
+    timezone: scheduleTimezone,
+  });
+
+  // A4 calendar sync — hourly scan of Google Calendar, matches events to
+  // existing interview_sessions by company name, upserts rounds idempotently
+  // per calendarEventId.
+  if (newsUserId) {
+    await upsertSchedule(client, {
+      scheduleId: "a4-calendar-sync-hourly",
+      cron: "0 * * * *",
+      workflowType: "calendarInterviewSyncWorkflow",
+      args: [{ userId: newsUserId, userEmail, daysAhead: 30 }],
+      taskQueue,
+      policies: commonPolicies,
+      timezone: scheduleTimezone,
+    });
+  } else {
+    console.log("skipping a4-calendar-sync-hourly schedule (NEWS_USER_ID not set)");
+  }
+
+  // A4 interview reminders — every 15 min. Pings upcoming rounds in next 24h
+  // (one Slack message per round, max once per 24h via metadata.notifiedAt).
+  await upsertSchedule(client, {
+    scheduleId: "a4-interview-reminders-15m",
+    cron: "*/15 * * * *",
+    workflowType: "interviewRemindersWorkflow",
+    args: [{ withinHours: 24, renotifyHours: 24, routeKey: process.env.INTERVIEW_ALERT_ROUTE_KEY ?? digest }],
+    taskQueue,
+    policies: commonPolicies,
+    timezone: scheduleTimezone,
+  });
+
+  // A11 monthly upgrade scan — 1st of month at 11:00 IST (catalog default).
+  // No per-user state; runs org-wide. Review-only — never auto-upgrades.
+  await upsertSchedule(client, {
+    scheduleId: "a11-upgrader-monthly",
+    cron: "0 11 1 * *",
+    workflowType: "platformUpgradeScanWorkflow",
+    args: [{ routeKey: process.env.PLATFORM_UPGRADE_ROUTE_KEY ?? digest }],
+    taskQueue,
+    policies: commonPolicies,
+    timezone: scheduleTimezone,
+  });
 
   // A1 tech news draft — Mon + Thu at 09:00 IST (catalog default).
   // Fetches HN top, classifies, drafts a LinkedIn-ready post, Slacks it.

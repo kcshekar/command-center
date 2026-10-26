@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { apiFetch, apiErrorMessage } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +34,7 @@ const SERVICE_LABEL: Record<string, string> = {
 };
 
 export function ConnectedAccountsCompact() {
+  const { user } = useAuth();
   const [email, setEmail] = useState("");
   const [accounts, setAccounts] = useState<ExternalAccount[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,6 +57,36 @@ export function ConnectedAccountsCompact() {
   useEffect(() => {
     refresh();
   }, []);
+
+  // Listen for the OAuth popup's completion postMessage, then refresh the
+  // list. The popup also calls window.close() right after sending, so the
+  // user doesn't have to interact with the tab themselves.
+  useEffect(() => {
+    function onMsg(ev: MessageEvent) {
+      if (!ev.data || typeof ev.data !== "object") return;
+      const t = (ev.data as any).type;
+      if (t === "cc-google-oauth-complete") {
+        const email = (ev.data as any).email as string | undefined;
+        toast.success(email ? `Connected ${email}` : "Google account connected");
+        void refresh();
+      } else if (t === "cc-github-oauth-complete") {
+        const login = (ev.data as any).login as string | undefined;
+        toast.success(login ? `Connected GitHub @${login}` : "GitHub connected");
+        void refresh();
+      }
+    }
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
+  function connectGithub() {
+    if (!user) return;
+    window.open(
+      `${WORKER_URL}/auth/github/start?ccUserId=${encodeURIComponent(user.userId)}`,
+      "cc-github-oauth",
+      "width=520,height=640,noopener=no"
+    );
+  }
 
   const grouped = accounts.reduce<Record<string, ExternalAccount[]>>((acc, a) => {
     (acc[a.service] ??= []).push(a);
@@ -169,21 +201,30 @@ export function ConnectedAccountsCompact() {
                 className="h-8 text-xs"
               />
             </div>
-            <a
-              href={target ?? "#"}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-disabled={!target}
-              onClick={(e) => !target && e.preventDefault()}
-              className={cn(
-                buttonVariants({ size: "sm" }),
-                "h-8 w-fit gap-1.5 text-xs",
-                !target && "pointer-events-none opacity-50"
-              )}
+            <Button
+              size="sm"
+              className="h-8 w-fit gap-1.5 text-xs"
+              disabled={!target}
+              onClick={() => {
+                if (!target) return;
+                // Open as a popup so the callback's window.close() + opener.postMessage
+                // round-trip refreshes this panel without the user juggling tabs.
+                window.open(target, "cc-google-oauth", "width=520,height=640,noopener=no");
+              }}
             >
               Sign in with Google
               <ExternalLink className="size-3" />
-            </a>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 w-fit gap-1.5 text-xs"
+              disabled={!user}
+              onClick={connectGithub}
+            >
+              Connect GitHub
+              <ExternalLink className="size-3" />
+            </Button>
           </div>
         )}
       </div>

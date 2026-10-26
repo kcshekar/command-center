@@ -39,9 +39,13 @@ export async function startCallbackServer(): Promise<void> {
       let body = "";
       for await (const chunk of req) body += chunk;
       try {
-        const payload = JSON.parse(body) as Callback;
+        const payload = JSON.parse(body) as Callback & { updateName?: string };
         const handle = temporal.workflow.getHandle(payload.workflowId);
-        await handle.executeUpdate("submitApproval", {
+        // Each approval card carries its workflow's update name on the
+        // button value. Fall back to "submitApproval" for the existing
+        // triage trash flow that predates this field.
+        const updateName = payload.updateName ?? "submitApproval";
+        await handle.executeUpdate(updateName, {
           args: [{
             actionId: payload.actionId,
             decision: payload.decision,
@@ -108,6 +112,55 @@ export async function startCallbackServer(): Promise<void> {
       return;
     }
 
+    // ─── GitHub OAuth: start → redirect browser to GitHub consent ───────
+    if (req.method === "GET" && url.pathname === "/auth/github/start") {
+      const ccUserId = url.searchParams.get("ccUserId");
+      if (!ccUserId) return void res.writeHead(400).end("missing ?ccUserId=");
+      try {
+        const { githubAuthUrl } = await import("./github-oauth.js");
+        res.writeHead(302, { Location: githubAuthUrl(ccUserId) }).end();
+      } catch (err) {
+        res.writeHead(500).end(`github start failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
+
+    // ─── GitHub OAuth: callback → exchange + persist + close popup ──────
+    if (req.method === "GET" && url.pathname === "/auth/github/callback") {
+      const code = url.searchParams.get("code");
+      const ccUserId = url.searchParams.get("state");
+      if (!code || !ccUserId) return void res.writeHead(400).end("missing code or state");
+      try {
+        const { githubExchange, saveGithubTokens } = await import("./github-oauth.js");
+        const cred = await githubExchange(code);
+        await saveGithubTokens(cred.login, ccUserId, cred);
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(
+          `<!doctype html><meta charset="utf-8"><title>GitHub Connected</title>
+          <body style="font-family:system-ui;padding:40px;max-width:520px;margin:auto">
+            <h2>✅ Connected GitHub: ${cred.login}</h2>
+            <p id="status">Tokens stored. Closing…</p>
+            <script>
+              (function () {
+                try {
+                  if (window.opener && !window.opener.closed) {
+                    window.opener.postMessage(
+                      { type: "cc-github-oauth-complete", login: ${JSON.stringify(cred.login)} },
+                      "*"
+                    );
+                  }
+                } catch (e) {}
+                setTimeout(function () { window.close(); }, 400);
+              })();
+            </script>
+          </body>`
+        );
+      } catch (err) {
+        console.error("github oauth exchange failed", err);
+        res.writeHead(500).end(`exchange failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
+
     // ─── Google OAuth: start → redirect browser to Google consent ────────
     if (req.method === "GET" && url.pathname === "/auth/google/start") {
       const email = url.searchParams.get("email");
@@ -150,11 +203,33 @@ export async function startCallbackServer(): Promise<void> {
         const verify = new google.auth.OAuth2();
         verify.setCredentials({ access_token: tokens.access_token });
         const profile = await google.gmail({ version: "v1", auth: verify }).users.getProfile({ userId: "me" });
-        res.writeHead(200, { "Content-Type": "text/html" }).end(
+        // Signal the opener (Connected Accounts panel) so it can refresh the
+        // list, then auto-close. Falls back to a manual-close message when
+        // the tab was opened directly (no opener, or opener on a different
+        // origin that blocks postMessage).
+        const emailAddr = profile.data.emailAddress ?? "";
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(
           `<!doctype html><meta charset="utf-8"><title>Authorized</title>
           <body style="font-family:system-ui;padding:40px;max-width:520px;margin:auto">
-            <h2>✅ Authorized ${profile.data.emailAddress}</h2>
-            <p>Tokens stored. You can close this tab.</p>
+            <h2>✅ Authorized ${emailAddr}</h2>
+            <p id="status">Tokens stored. Closing this tab…</p>
+            <script>
+              (function () {
+                try {
+                  if (window.opener && !window.opener.closed) {
+                    window.opener.postMessage(
+                      { type: "cc-google-oauth-complete", email: ${JSON.stringify(emailAddr)} },
+                      "*"
+                    );
+                  }
+                } catch (e) { /* cross-origin: ignore */ }
+                setTimeout(function () {
+                  window.close();
+                  var s = document.getElementById("status");
+                  if (s) s.textContent = "Tokens stored. You can close this tab.";
+                }, 400);
+              })();
+            </script>
           </body>`
         );
       } catch (err) {

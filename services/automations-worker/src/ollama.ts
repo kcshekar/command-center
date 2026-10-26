@@ -10,13 +10,16 @@ export type TriageCategory =
   | "transactional_bank"
   | "actionable_bill"
   | "personal_important"
+  | "job_posting"
+  | "needs_reply"
+  | "interview_scheduling"
   | "spam";
 
 const SCHEMA = {
   type: "object",
   required: ["category", "confidence"],
   properties: {
-    category: { type: "string", enum: ["promotional", "transactional_bank", "actionable_bill", "personal_important", "spam"] },
+    category: { type: "string", enum: ["promotional", "transactional_bank", "actionable_bill", "personal_important", "job_posting", "needs_reply", "interview_scheduling", "spam"] },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     reason: { type: "string" },
   },
@@ -33,11 +36,14 @@ export async function classifyEmail(subject: string, snippet: string, from: stri
 
 - transactional_bank: bank/credit-card alert confirming a transaction ALREADY HAPPENED. Trigger words: "spent", "debited", "credited", "withdrawn", "payment of Rs". Includes a specific amount + account/card number.
 - actionable_bill: a bill or invoice DUE on a future date. Trigger words: "due on", "due date", "pay before", "statement for". Utility/telecom/credit-card bills.
-- promotional: marketing, offers, discounts, newsletters.
-- personal_important: human correspondence, OTPs, calendar invites, delivery updates.
+- job_posting: job alert or newsletter with concrete openings. Trigger words: "new jobs for you", "hiring", "apply now", "<role> at <company>", listings-style content from LinkedIn/Naukri/Hired/Indeed/Wellfound/Angellist.
+- interview_scheduling: a human-written message about scheduling, confirming, or rescheduling an interview. Trigger: "scheduled for", "interview on", "coding round", "would you be available", calendar invite / .ics attached, mention of a time + a company name + the word "interview" or "chat with the team". NOT a general "we're hiring" blast.
+- needs_reply: a human-written message where the sender is asking a question or expecting the recipient to respond. NOT automated notifications and NOT interview scheduling (that has its own bucket). Trigger: direct human tone, question marks, "can you", "could you", "let me know", "please confirm". If an OTP, delivery update, or receipt, it is NOT needs_reply.
+- promotional: marketing, offers, discounts, newsletters (non-job).
+- personal_important: human correspondence that does NOT need a reply (FYI only), OTPs, calendar invites, delivery updates.
 - spam: unsolicited, phishing.
 
-Output a JSON object with keys: category (one of the five strings above), confidence (0..1), reason (short phrase).
+Output a JSON object with keys: category (one of the seven strings above), confidence (0..1), reason (short phrase).
 
 From: ${from}
 Subject: ${subject}

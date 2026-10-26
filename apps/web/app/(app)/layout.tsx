@@ -18,6 +18,19 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Command, LogOut, Menu, Monitor, ShieldCheck, ScrollText } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Breadcrumb } from "@/components/breadcrumb";
+
+// Pages that live below /automations get an auto-inserted back-crumb so the
+// user can jump back without a browser back-click.
+const AUTOMATION_SUBPATHS: Record<string, string> = {
+  "/jobs":            "Jobs",
+  "/interviews":      "Interviews",
+  "/price-watcher":   "Price Watcher",
+  "/learning":        "Learning Digest",
+  "/pilgrim":         "TTD / Pilgrim Pack",
+  "/profile-drafts":  "Profile Drafts",
+  "/agent-automations": "Control room",
+};
 
 function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
   return (
@@ -131,6 +144,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <main className="flex-1 min-h-0 overflow-auto p-4 sm:p-6">
+          {AUTOMATION_SUBPATHS[pathname] && (
+            <div className="mb-3">
+              <Breadcrumb items={[
+                { label: "Automations", href: "/automations" },
+                { label: AUTOMATION_SUBPATHS[pathname] },
+              ]} />
+            </div>
+          )}
           <div key={pathname} className="animate-in fade-in slide-in-from-bottom-2 duration-300">
             {children}
           </div>

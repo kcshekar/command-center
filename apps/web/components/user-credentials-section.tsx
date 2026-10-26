@@ -45,6 +45,7 @@ export function UserCredentialsSection() {
   const [service, setService] = useState("keepa");
   const [label, setLabel] = useState("primary");
   const [key, setKey] = useState("");
+  const [appId, setAppId] = useState(""); // adzuna only
   const [saving, setSaving] = useState(false);
 
   const [removing, setRemoving] = useState<string | null>(null);
@@ -72,15 +73,23 @@ export function UserCredentialsSection() {
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (!key.trim()) return;
+    // Adzuna needs both app_id + app_key; without appId the Jobs automation
+    // can't call the API, so block save with a clear reason.
+    if (service === "adzuna" && !appId.trim()) {
+      toast.error("Adzuna needs both app_id and app_key — fill in app_id too.");
+      return;
+    }
     setSaving(true);
     try {
       await userCredentialsApi.save({
         service,
         label: label.trim() || undefined,
         key: key.trim(),
+        metadata: service === "adzuna" ? { appId: appId.trim() } : undefined,
       });
       toast.success(`Saved ${SERVICE_LABEL[service] ?? service} key`);
       setKey("");
+      setAppId("");
       setAddOpen(false);
       await refresh(true);
     } catch (err) {
@@ -228,9 +237,23 @@ export function UserCredentialsSection() {
                 className="h-8 text-xs"
               />
             </div>
+            {service === "adzuna" && (
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="appId" className="text-[11px]">
+                  Adzuna app_id <span className="text-muted-foreground">(public identifier, not secret)</span>
+                </Label>
+                <Input
+                  id="appId"
+                  value={appId}
+                  onChange={(e) => setAppId(e.target.value)}
+                  placeholder="e.g. d630112c"
+                  className="h-8 font-mono text-xs"
+                />
+              </div>
+            )}
             <div className="flex flex-col gap-1">
               <Label htmlFor="key" className="text-[11px]">
-                API key
+                {service === "adzuna" ? "Adzuna app_key" : "API key"}
               </Label>
               <Input
                 id="key"

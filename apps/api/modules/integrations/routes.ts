@@ -259,7 +259,8 @@ export const integrationRoutes = {
           // Prefer label='primary', fall back to the most-recent one.
           const rows = await tx`
             SELECT label,
-                   pgp_sym_decrypt(key_enc, ${dek})::text AS key
+                   pgp_sym_decrypt(key_enc, ${dek})::text AS key,
+                   metadata
             FROM user_credentials
             WHERE service = ${service}
             ORDER BY (label = 'primary') DESC, updated_at DESC
@@ -278,7 +279,7 @@ export const integrationRoutes = {
         metadata: { targetUserId: userId, service, tokenId: ctx.tokenId },
       });
 
-      return Response.json({ label: found.label, key: found.key });
+      return Response.json({ label: found.label, key: found.key, metadata: found.metadata ?? {} });
     }),
   },
 
@@ -562,6 +563,357 @@ export const integrationRoutes = {
     }),
   },
 
+  // A2.2 — profile read for the Jobs fetcher. Workers need keywords/location/
+  // skills to drive external APIs. scope `profile:read`.
+  "/api/integrations/user-profile": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "profile:read");
+      const url = new URL(req.url);
+      const targetUserId = url.searchParams.get("userId");
+      if (!targetUserId || !UUID_RE.test(targetUserId)) {
+        throw new HttpError(400, "userId query param (uuid) is required");
+      }
+      const row = await withTenantTx(
+        { orgId: ctx.orgId, userId: targetUserId, role: ctx.role },
+        async (tx) => {
+          const [r] = await tx`
+            SELECT headline,
+                   years_exp       AS "yearsExp",
+                   location,
+                   remote_pref     AS "remotePref",
+                   min_salary_lpa  AS "minSalaryLpa",
+                   currency,
+                   skills, keywords, anti_keywords AS "antiKeywords",
+                   bio, metadata
+            FROM user_profile WHERE user_id = ${targetUserId}::uuid
+          `;
+          return r ?? null;
+        }
+      );
+      return Response.json(row);
+    }),
+  },
+
+  // A2.2 — job_leads upsert. Idempotent on (user, source, source_id) via
+  // ON CONFLICT. Classify/score fields (score, score_reason, status) are
+  // separate so the fetcher doesn't clobber the classifier's work on re-runs.
+  "/api/integrations/job-leads": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "jobs:write");
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof body.userId !== "string" || !UUID_RE.test(body.userId)) {
+        throw new HttpError(400, "userId (uuid) is required");
+      }
+      const asStr = (v: unknown) => typeof v === "string" && v.trim() ? v.trim() : null;
+      const asNum = (v: unknown) => {
+        if (v === null || v === undefined || v === "") return null;
+        const n = typeof v === "number" ? v : parseFloat(String(v));
+        return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+      };
+      const source = asStr(body.source);
+      const sourceId = asStr(body.sourceId ?? body.source_id);
+      const title = asStr(body.title);
+      const url = asStr(body.url);
+      if (!source || !sourceId || !title || !url) {
+        throw new HttpError(400, "source, sourceId, title, url are required");
+      }
+      const metadata = body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+        ? body.metadata as Record<string, unknown> : {};
+
+      const result = await withTenantTx(
+        { orgId: ctx.orgId, userId: body.userId, role: ctx.role },
+        async (tx) => {
+          const [row] = await tx`
+            INSERT INTO job_leads
+              (org_id, user_id, source, source_id, title, company, location, url,
+               salary_min, salary_max, currency, salary_period, description,
+               posted_at, metadata)
+            VALUES
+              (${ctx.orgId}::uuid, ${body.userId}::uuid,
+               ${source}, ${sourceId}, ${title},
+               ${asStr(body.company)}, ${asStr(body.location)}, ${url},
+               ${asNum(body.salaryMin ?? body.salary_min)},
+               ${asNum(body.salaryMax ?? body.salary_max)},
+               ${asStr(body.currency)}, ${asStr(body.salaryPeriod ?? body.salary_period)},
+               ${asStr(body.description)},
+               ${asStr(body.postedAt ?? body.posted_at)},
+               ${JSON.stringify(metadata)}::text::jsonb)
+            ON CONFLICT (user_id, source, source_id) DO UPDATE SET
+              title       = EXCLUDED.title,
+              company     = EXCLUDED.company,
+              location    = EXCLUDED.location,
+              url         = EXCLUDED.url,
+              salary_min  = EXCLUDED.salary_min,
+              salary_max  = EXCLUDED.salary_max,
+              currency    = EXCLUDED.currency,
+              salary_period = EXCLUDED.salary_period,
+              description = EXCLUDED.description,
+              posted_at   = EXCLUDED.posted_at,
+              metadata    = job_leads.metadata || EXCLUDED.metadata,
+              updated_at  = now()
+            RETURNING id, source, source_id AS "sourceId", title,
+                      created_at AS "createdAt",
+                      (xmax = 0) AS "created"
+          `;
+          return row;
+        }
+      );
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "job_lead:ingest_via_integration",
+        resourceType: "job_lead",
+        resourceId: String(result.id),
+        metadata: { targetUserId: body.userId, source, sourceId, created: Boolean(result.created), tokenId: ctx.tokenId },
+      });
+
+      return Response.json(result, { status: result.created ? 201 : 200 });
+    }),
+  },
+
+  // A3.prep — worker fetches a single lead to research. Scope: jobs:read.
+  // Target user in query; CC re-enters under withTenantTx for RLS.
+  "/api/integrations/job-leads/:id": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "jobs:read");
+      const { id } = req.params;
+      if (!UUID_RE.test(id)) throw new HttpError(400, "id must be a uuid");
+      const url = new URL(req.url);
+      const targetUserId = url.searchParams.get("userId");
+      if (!targetUserId || !UUID_RE.test(targetUserId)) {
+        throw new HttpError(400, "userId query param (uuid) is required");
+      }
+      const row = await withTenantTx(
+        { orgId: ctx.orgId, userId: targetUserId, role: ctx.role },
+        async (tx) => {
+          const [r] = await tx`
+            SELECT id, source, source_id AS "sourceId",
+                   title, company, location, url,
+                   salary_min AS "salaryMin", salary_max AS "salaryMax",
+                   currency, salary_period AS "salaryPeriod",
+                   description, posted_at AS "postedAt",
+                   score, score_reason AS "scoreReason"
+            FROM job_leads WHERE id = ${id}::uuid
+          `;
+          return r ?? null;
+        }
+      );
+      if (!row) throw new HttpError(404, "job lead not found");
+      return Response.json(row);
+    }),
+  },
+
+  // A4 — upsert a round discovered from Google Calendar. Idempotent per
+  // metadata.calendarEventId: a re-sync of the same event updates in place.
+  "/api/integrations/interview-rounds/from-calendar": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "interviews:write");
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof body.userId !== "string" || !UUID_RE.test(body.userId)) throw new HttpError(400, "userId uuid required");
+      if (typeof body.sessionId !== "string" || !UUID_RE.test(body.sessionId)) throw new HttpError(400, "sessionId uuid required");
+      const calendarEventId = typeof body.calendarEventId === "string" && body.calendarEventId.trim() ? body.calendarEventId.trim() : null;
+      if (!calendarEventId) throw new HttpError(400, "calendarEventId required");
+      const kind = typeof body.kind === "string" ? body.kind : "other";
+      const scheduledAt = typeof body.scheduledAt === "string" ? body.scheduledAt : null;
+      if (!scheduledAt) throw new HttpError(400, "scheduledAt required");
+      const durationMin = typeof body.durationMin === "number" ? Math.max(0, Math.round(body.durationMin)) : null;
+      const interviewer = typeof body.interviewer === "string" && body.interviewer.trim() ? body.interviewer.trim() : null;
+      const notes = typeof body.notes === "string" && body.notes.trim() ? body.notes.trim() : null;
+
+      const result = await withTenantTx(
+        { orgId: ctx.orgId, userId: body.userId, role: ctx.role },
+        async (tx) => {
+          const [existing] = await tx`
+            SELECT id FROM interview_rounds
+            WHERE session_id = ${body.sessionId}::uuid
+              AND metadata->>'calendarEventId' = ${calendarEventId}
+            LIMIT 1
+          `;
+          if (existing) {
+            const [row] = await tx`
+              UPDATE interview_rounds
+              SET kind = ${kind},
+                  scheduled_at = ${scheduledAt}::timestamptz,
+                  duration_min = ${durationMin},
+                  interviewer  = COALESCE(${interviewer}, interviewer),
+                  notes        = COALESCE(${notes}, notes),
+                  updated_at   = now()
+              WHERE id = ${existing.id}::uuid
+              RETURNING id
+            `;
+            return { id: row.id, created: false };
+          }
+          const [row] = await tx`
+            INSERT INTO interview_rounds
+              (org_id, user_id, session_id, kind, scheduled_at, duration_min,
+               interviewer, notes, metadata)
+            VALUES
+              (${ctx.orgId}::uuid, ${body.userId}::uuid, ${body.sessionId}::uuid,
+               ${kind}, ${scheduledAt}::timestamptz, ${durationMin},
+               ${interviewer}, ${notes},
+               jsonb_build_object('calendarEventId', to_jsonb(${calendarEventId}::text), 'via', 'a4.calendar'))
+            RETURNING id
+          `;
+          return { id: row.id, created: true };
+        }
+      );
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "interview_round:calendar_upsert",
+        resourceType: "interview_round",
+        resourceId: String(result.id),
+        metadata: { calendarEventId, sessionId: body.sessionId, created: result.created, tokenId: ctx.tokenId },
+      });
+
+      return Response.json(result, { status: result.created ? 201 : 200 });
+    }),
+  },
+
+  // A4 — list rounds coming up in the next N hours that haven't been pinged
+  // in the renotify window. SECURITY DEFINER on the raw sql so the worker
+  // can see every user's rounds in the org from one call.
+  "/api/integrations/interview-rounds/due": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "interviews:read");
+      const u = new URL(req.url);
+      const withinHours = Math.max(1, Math.min(168, Number(u.searchParams.get("withinHours") ?? 24)));
+      const renotifyHours = Math.max(1, Math.min(168, Number(u.searchParams.get("renotifyHours") ?? 24)));
+      const cutoffUpper = new Date(Date.now() + withinHours * 3600 * 1000);
+      const renotifyCutoff = new Date(Date.now() - renotifyHours * 3600 * 1000);
+      const rows = await sql`
+        SELECT round_id         AS "roundId",
+               session_id       AS "sessionId",
+               user_id          AS "userId",
+               kind,
+               scheduled_at     AS "scheduledAt",
+               duration_min     AS "durationMin",
+               interviewer,
+               notes,
+               company, role,
+               last_notified_at AS "lastNotifiedAt"
+        FROM list_due_interview_rounds(${ctx.orgId}::uuid, ${cutoffUpper}, ${renotifyCutoff})
+      `;
+      return Response.json(rows);
+    }),
+  },
+
+  // A4 — mark rounds notified in bulk after the worker Slacks them.
+  "/api/integrations/interview-rounds/notified": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "interviews:write");
+      const body = (await req.json().catch(() => ({}))) as { ids?: unknown };
+      if (!Array.isArray(body.ids)) throw new HttpError(400, "ids: uuid[] required");
+      const ids = body.ids.filter((x): x is string => typeof x === "string" && UUID_RE.test(x));
+      if (ids.length === 0) return Response.json({ updated: 0 });
+      const [row] = await sql`
+        SELECT mark_interview_rounds_notified(${ctx.orgId}::uuid, ${textArrayLiteral(ids)}::uuid[]) AS updated
+      `;
+      await writeAudit(ctx.tx, ctx, {
+        action: "interview_round:notified_via_integration",
+        resourceType: "interview_round",
+        metadata: { count: row.updated, tokenId: ctx.tokenId },
+      });
+      return Response.json({ updated: row.updated });
+    }),
+  },
+
+  // A3/A4 — the A3.prep worker calls POST to persist an interview_session
+  // after researching a job_lead. Idempotent per (user, source_job_lead_id).
+  // GET lists active sessions for the A4 calendar matcher.
+  "/api/integrations/interview-sessions": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "interviews:read");
+      const u = new URL(req.url);
+      const targetUserId = u.searchParams.get("userId");
+      if (!targetUserId || !UUID_RE.test(targetUserId)) {
+        throw new HttpError(400, "userId query param (uuid) is required");
+      }
+      const rows = await withTenantTx(
+        { orgId: ctx.orgId, userId: targetUserId, role: ctx.role },
+        async (tx) => tx`
+          SELECT id, company, role
+          FROM interview_sessions
+          WHERE status IN ('researching','applied','interviewing')
+          ORDER BY updated_at DESC
+          LIMIT 200
+        `,
+      );
+      return Response.json(rows);
+    }),
+
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "interviews:write");
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof body.userId !== "string" || !UUID_RE.test(body.userId)) {
+        throw new HttpError(400, "userId (uuid) is required");
+      }
+      const company = typeof body.company === "string" && body.company.trim() ? body.company.trim() : null;
+      const role    = typeof body.role    === "string" && body.role.trim()    ? body.role.trim()    : null;
+      if (!company || !role) throw new HttpError(400, "company and role are required");
+      const sourceJobLeadId = typeof body.sourceJobLeadId === "string" && UUID_RE.test(body.sourceJobLeadId)
+        ? body.sourceJobLeadId : null;
+      const notes = typeof body.notes === "string" ? body.notes : null;
+      const metadata = body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+        ? body.metadata as Record<string, unknown> : {};
+
+      const row = await withTenantTx(
+        { orgId: ctx.orgId, userId: body.userId, role: ctx.role },
+        async (tx) => {
+          // No DB unique on (user_id, source_job_lead_id) — enforce idempotency
+          // in TS: if a session already exists for the lead, update it.
+          let existingId: string | null = null;
+          if (sourceJobLeadId) {
+            const [e] = await tx`
+              SELECT id FROM interview_sessions
+              WHERE source_job_lead_id = ${sourceJobLeadId}::uuid
+              LIMIT 1
+            `;
+            if (e) existingId = String(e.id);
+          }
+
+          if (existingId) {
+            const [r] = await tx`
+              UPDATE interview_sessions
+              SET company    = ${company},
+                  role       = ${role},
+                  notes      = COALESCE(${notes}, notes),
+                  metadata   = metadata || ${JSON.stringify(metadata)}::text::jsonb,
+                  updated_at = now()
+              WHERE id = ${existingId}::uuid
+              RETURNING id, company, role,
+                        source_job_lead_id AS "sourceJobLeadId",
+                        status, created_at AS "createdAt"
+            `;
+            return { row: r, created: false };
+          }
+          const [r] = await tx`
+            INSERT INTO interview_sessions
+              (org_id, user_id, company, role, source_job_lead_id, status, notes, metadata)
+            VALUES
+              (${ctx.orgId}::uuid, ${body.userId}::uuid,
+               ${company}, ${role},
+               ${sourceJobLeadId}::uuid,
+               'researching',
+               ${notes},
+               ${JSON.stringify(metadata)}::text::jsonb)
+            RETURNING id, company, role,
+                      source_job_lead_id AS "sourceJobLeadId",
+                      status, created_at AS "createdAt"
+          `;
+          return { row: r, created: true };
+        }
+      );
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "interview_session:upsert_via_integration",
+        resourceType: "interview_session",
+        resourceId: String(row.row.id),
+        metadata: { targetUserId: body.userId, company, role, sourceJobLeadId, created: row.created, tokenId: ctx.tokenId },
+      });
+
+      return Response.json(row.row, { status: row.created ? 201 : 200 });
+    }),
+  },
+
   // A8.1 — list a user's enabled learning goals. Worker iterates these and
   // calls the matching source fetcher (GitHub Releases, dev.to tag feed, RSS).
   "/api/integrations/learning-goals": {
@@ -674,6 +1026,144 @@ export const integrationRoutes = {
         `
       );
       return Response.json(rows);
+    }),
+  },
+
+  // A2.3 — classifier writes score + reason onto a job_lead. Separate from
+  // the generic PATCH so the fetcher's upsert path can't clobber it, and so
+  // the scope split (jobs:write for both; could split further later) stays
+  // consistent with the ingest endpoint.
+  "/api/integrations/job-leads/:id/score": {
+    PATCH: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "jobs:write");
+      const { id } = req.params;
+      if (!UUID_RE.test(id)) throw new HttpError(400, "id must be a uuid");
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof body.userId !== "string" || !UUID_RE.test(body.userId)) {
+        throw new HttpError(400, "userId (uuid) is required");
+      }
+      const score = typeof body.score === "number" ? Math.max(1, Math.min(5, Math.round(body.score))) : null;
+      if (score == null) throw new HttpError(400, "score (1..5 int) is required");
+      const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : null;
+
+      const row = await withTenantTx(
+        { orgId: ctx.orgId, userId: body.userId, role: ctx.role },
+        async (tx) => {
+          const [r] = await tx`
+            UPDATE job_leads
+            SET score = ${score},
+                score_reason = ${reason},
+                classified_at = now(),
+                updated_at = now()
+            WHERE id = ${id}::uuid
+            RETURNING id, score, score_reason AS "scoreReason", classified_at AS "classifiedAt"
+          `;
+          return r ?? null;
+        }
+      );
+      if (!row) throw new HttpError(404, "job lead not found");
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "job_lead:score_via_integration",
+        resourceType: "job_lead",
+        resourceId: id,
+        metadata: { targetUserId: body.userId, score, tokenId: ctx.tokenId },
+      });
+
+      return Response.json(row);
+    }),
+  },
+
+  // A7 — single-item get, body included. userId in query for RLS re-entry.
+  "/api/integrations/knowledge-items/:id": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "knowledge:read");
+      const { id } = req.params;
+      if (!UUID_RE.test(id)) throw new HttpError(400, "id must be a uuid");
+      const u = new URL(req.url);
+      const targetUserId = u.searchParams.get("userId");
+      if (!targetUserId || !UUID_RE.test(targetUserId)) {
+        throw new HttpError(400, "userId query param (uuid) required");
+      }
+      const row = await withTenantTx(
+        { orgId: ctx.orgId, userId: targetUserId, role: ctx.role },
+        async (tx) => {
+          const [r] = await tx`
+            SELECT id, type, title, body, tags, source,
+                   source_id AS "sourceId",
+                   metadata,
+                   created_at AS "createdAt",
+                   updated_at AS "updatedAt"
+            FROM knowledge_items WHERE id = ${id}::uuid
+          `;
+          return r ?? null;
+        }
+      );
+      if (!row) throw new HttpError(404, "knowledge item not found");
+      return Response.json(row);
+    }),
+  },
+
+  // Pgvector — list knowledge_items that still need embeddings, cross-user
+  // in the token's org. Narrow payload: title + body only (what we feed to
+  // the embed model). Scope: knowledge:read.
+  "/api/integrations/knowledge-items/unembedded": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "knowledge:read");
+      const limit = Math.max(1, Math.min(50, Number(new URL(req.url).searchParams.get("limit") ?? 10)));
+      const rows = await sql`
+        SELECT id, user_id AS "userId", title, body, type
+        FROM list_unembedded_knowledge_items(${ctx.orgId}::uuid, ${limit})
+      `;
+      return Response.json(rows);
+    }),
+  },
+
+  // Pgvector — write a 1536-dim embedding to a knowledge_item. userId in
+  // body for target-user withTenantTx re-entry. Vector arrives as a
+  // number[]; CC formats as a pgvector literal.
+  "/api/integrations/knowledge-items/:id/embedding": {
+    PATCH: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "knowledge:write");
+      const { id } = req.params;
+      if (!UUID_RE.test(id)) throw new HttpError(400, "id must be a uuid");
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof body.userId !== "string" || !UUID_RE.test(body.userId)) {
+        throw new HttpError(400, "userId uuid required");
+      }
+      if (!Array.isArray(body.embedding) || body.embedding.length !== 1536) {
+        throw new HttpError(400, "embedding must be a number[1536]");
+      }
+      for (const n of body.embedding) {
+        if (typeof n !== "number" || !Number.isFinite(n)) throw new HttpError(400, "embedding must be finite numbers");
+      }
+      // pgvector literal: '[v1,v2,...]'. Build once in TS so Bun.SQL binds a
+      // simple text parameter — the ::vector cast parses it server-side.
+      const vectorLit = `[${(body.embedding as number[]).join(",")}]`;
+
+      const updated = await withTenantTx(
+        { orgId: ctx.orgId, userId: body.userId, role: ctx.role },
+        async (tx) => {
+          const [row] = await tx`
+            UPDATE knowledge_items
+            SET embedding = ${vectorLit}::vector,
+                updated_at = now()
+            WHERE id = ${id}::uuid
+            RETURNING id
+          `;
+          return row ?? null;
+        }
+      );
+      if (!updated) throw new HttpError(404, "knowledge item not found");
+
+      await writeAudit(ctx.tx, ctx, {
+        action: "knowledge_item:embedded_via_integration",
+        resourceType: "knowledge_item",
+        resourceId: id,
+        metadata: { targetUserId: body.userId, dim: body.embedding.length, tokenId: ctx.tokenId },
+      });
+
+      return Response.json({ id, ok: true });
     }),
   },
 

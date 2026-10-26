@@ -1,5 +1,6 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { mailReplyWorkflow } from "./mail-reply.js";
 
 const {
   fetchGmailHistory,
@@ -10,6 +11,9 @@ const {
   trashGmailMessages,
   ingestExpenseFromEmail,
   ingestBillReminder,
+  ingestJobEmailLead,
+  logReplyNeeded,
+  ingestInterviewSchedulingEmail,
 } = wf.proxyActivities<typeof activities>({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 3 },
@@ -19,6 +23,7 @@ export interface TriageInput {
   userEmail: string;
   digestRouteKey: string;   // e.g. "automations.digest"
   approvalRouteKey: string; // e.g. "automations.approval"
+  userId?: string;          // A5.1: owning user for job_posting → A2 chain
 }
 
 interface ApprovalPayload {
@@ -63,7 +68,10 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed
   const perCategory: Record<string, Array<{ id: string; subject: string; snippet: string; from: string }>> = {};
   let expensesIngested = 0;
   let billsIngested = 0;
-  let ingestFailed = 0; // P0 #1: track CC-side failures instead of crashing the whole sweep
+  let jobsIngested = 0;         // A5.1 — job_posting → A2 job_leads
+  let replyQueued = 0;          // A5.2 — needs_reply → mailReplyWorkflow child
+  let interviewsIngested = 0;   // A5.3 — interview_scheduling → A4 session+round
+  let ingestFailed = 0;
 
   for (const m of messages) {
     let category = "unclassified";
@@ -89,14 +97,52 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed
       } catch {
         ingestFailed++;
       }
+    } else if (category === "job_posting" && input.userId) {
+      // A5.1: route job alerts into A2's job_leads via the integration path.
+      try {
+        const r = await ingestJobEmailLead(input.userId, m);
+        if (r.ok) jobsIngested++;
+      } catch {
+        ingestFailed++;
+      }
+    } else if (category === "interview_scheduling" && input.userId) {
+      try {
+        const r = await ingestInterviewSchedulingEmail(input.userId, input.userEmail, m);
+        if (r.ok) interviewsIngested++;
+      } catch { ingestFailed++; }
+    } else if (category === "needs_reply" && input.userId) {
+      // A5.2 — spawn mailReplyWorkflow as a parent-closed child so the triage
+      // run completes immediately; the reply gets its own 24h approval window.
+      try {
+        await logReplyNeeded(m);
+        await wf.startChild(mailReplyWorkflow, {
+          args: [{
+            userId: input.userId,
+            userEmail: input.userEmail,
+            messageId: m.id,
+            subject: m.subject,
+            from: m.from,
+            approvalRouteKey: input.approvalRouteKey,
+          }],
+          workflowId: `mail-reply-${m.id}`,
+          parentClosePolicy: wf.ParentClosePolicy.PARENT_CLOSE_POLICY_ABANDON,
+        });
+        replyQueued++;
+      } catch (err) {
+        // Already-started = idempotent re-ingest of the same message, skip.
+        const name = err instanceof Error ? err.name : "";
+        if (name !== "WorkflowExecutionAlreadyStartedError") {
+          console.warn("[a5.mail] failed to spawn mailReplyWorkflow", { id: m.id, err: String(err) });
+        }
+      }
     }
   }
 
   const trashCandidates = [...(perCategory["promotional"] ?? []), ...(perCategory["spam"] ?? [])];
 
   const ingestionSummary =
-    (expensesIngested || billsIngested || ingestFailed)
-      ? `\n_Ingested: ${expensesIngested} expense(s), ${billsIngested} bill reminder(s)${ingestFailed ? `, ${ingestFailed} failed` : ""}._`
+    (expensesIngested || billsIngested || jobsIngested || replyQueued || interviewsIngested || ingestFailed)
+      ? `\n_Ingested: ${expensesIngested} expense(s), ${billsIngested} bill reminder(s), ${jobsIngested} job lead(s), ${replyQueued} reply queue(s), ${interviewsIngested} interview(s)${ingestFailed ? `, ${ingestFailed} failed` : ""}._`
       : "";
 
   // Nothing to approve → still post a digest so the owner sees the sweep ran.

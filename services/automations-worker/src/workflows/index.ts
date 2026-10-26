@@ -5,3 +5,13 @@ export { priceWatchInitialFetchWorkflow, priceWatchDailyPollWorkflow } from "./p
 export { ttdPrepWorkflow } from "./ttd-prep.js";
 export { newsIngestWorkflow } from "./news.js";
 export { learningIngestWorkflow } from "./learning.js";
+export { platformUpgradeScanWorkflow } from "./upgrader.js";
+export { jobsIngestWorkflow } from "./jobs.js";
+export { profileRefreshWorkflow } from "./profile-refresh.js";
+export { mailReplyWorkflow, submitReplyApproval } from "./mail-reply.js";
+export { interviewPrepWorkflow } from "./interview-prep.js";
+export { resumeTailorWorkflow } from "./resume-tailor.js";
+export { interviewRemindersWorkflow } from "./interview-reminders.js";
+export { calendarInterviewSyncWorkflow } from "./calendar-sync.js";
+export { knowledgeEmbedderWorkflow } from "./embedder.js";
+export { githubPrFromKnowledgeItemWorkflow } from "./github-pr.js";

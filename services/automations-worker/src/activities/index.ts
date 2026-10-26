@@ -8,6 +8,16 @@ export { fetchInitialPriceSnapshot, listDuePriceWatches } from "./price-watch.js
 export { prepareTtdReminders } from "./ttd-prep.js";
 export { ingestHnTopStories, classifyNewsItem, draftAndPostNewsBrief } from "./news.js";
 export { ingestLearningReleases, classifyLessonItem, draftAndPostLearningDigest } from "./learning.js";
+export { scanRepoDepUpgrades } from "./upgrader.js";
+export { ingestAdzunaJobs, draftAndPostJobsDigest } from "./jobs.js";
+export { refreshProfileDrafts } from "./profile-refresh.js";
+export { ingestJobEmailLead, logReplyNeeded, fetchGmailMessageFull, draftReplyToEmail, sendGmailReply, ingestInterviewSchedulingEmail } from "./mail-dispatch.js";
+export { researchJobLeadForInterview } from "./interview-prep.js";
+export { tailorResumeForJobLead } from "./resume-tailor.js";
+export { remindUpcomingInterviewRounds } from "./interview-reminders.js";
+export { syncGoogleCalendarInterviews } from "./calendar-sync.js";
+export { sweepUnembeddedKnowledgeItems } from "./embedder.js";
+export { openGithubPrFromKnowledgeItem } from "./github-pr.js";
 
 // ─── Google reads ────────────────────────────────────────────────────────────
 

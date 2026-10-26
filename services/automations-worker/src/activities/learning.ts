@@ -1,5 +1,5 @@
 import { cc } from "../cc-client.js";
-import { fetchGithubReleases, type LearningCandidate } from "../learning-sources.js";
+import { fetchGithubReleases, fetchDevToTagArticles, fetchRssFeed, type LearningCandidate } from "../learning-sources.js";
 import { ollamaJson, ollamaText } from "../ollama.js";
 
 const LEARNING_ALERT_ROUTE = process.env.LEARNING_ALERT_ROUTE_KEY ?? "automations.digest";
@@ -93,17 +93,25 @@ export async function ingestLearningReleases(input: {
   const sinceIso = new Date(Date.now() - daysBack * 86400 * 1000).toISOString();
 
   const goals = await cc.listLearningGoals(input.userId);
-  const activeRepos = goals.filter((g) => g.sourceKind === "github_release");
-  if (goals.length > activeRepos.length) {
-    console.warn("[a8.learning] non-github_release goals ignored for A8.2", {
-      skipped: goals.length - activeRepos.length,
-    });
-  }
+  const perRepo = input.perRepo ?? 5;
 
+  // Fan out per source_kind. Each adapter returns the same LearningCandidate
+  // shape so classification + draft stay source-agnostic.
   const candidates: LearningCandidate[] = [];
-  for (const g of activeRepos) {
-    const items = await fetchGithubReleases(g.target, sinceIso, input.perRepo ?? 5);
-    candidates.push(...items);
+  for (const g of goals) {
+    try {
+      if (g.sourceKind === "github_release") {
+        candidates.push(...await fetchGithubReleases(g.target, sinceIso, perRepo));
+      } else if (g.sourceKind === "dev_to_tag") {
+        candidates.push(...await fetchDevToTagArticles(g.target, sinceIso, perRepo));
+      } else if (g.sourceKind === "rss") {
+        candidates.push(...await fetchRssFeed(g.target, sinceIso, perRepo));
+      } else {
+        console.warn("[a8.learning] unknown source_kind, skipping", { kind: g.sourceKind, target: g.target });
+      }
+    } catch (err) {
+      console.warn("[a8.learning] fetcher failed", { kind: g.sourceKind, target: g.target, err: String(err) });
+    }
   }
 
   let stored = 0, classified = 0, failed = 0;
@@ -158,7 +166,7 @@ export async function ingestLearningReleases(input: {
     lessons.push(lesson);
   }
 
-  return { goals: activeRepos.length, fetched: candidates.length, stored, classified, failed, lessons };
+  return { goals: goals.length, fetched: candidates.length, stored, classified, failed, lessons };
 }
 
 // A8.2 — build the weekly digest from the classified lessons and Slack it.
