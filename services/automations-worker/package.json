@@ -23,7 +23,6 @@
     "@temporalio/worker": "^1.11.0",
     "@temporalio/workflow": "^1.11.0",
     "dotenv": "^18.0.5",
-    "google-auth-library": "^11.2.0",
     "googleapis": "^144.0.0",
     "pg": "^8.13.0"
   },
@@ -35,10 +34,7 @@
   },
   "pnpm": {
     "overrides": {
-      "fast-uri": "3.1.9",
-      "google-auth-library@11>gaxios": "8.3.1",
-      "google-auth-library@11>gcp-metadata": "9.2.1",
-      "gcp-metadata@9>gaxios": "8.3.1"
+      "fast-uri": "3.1.9"
     }
   }
 }

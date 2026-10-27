@@ -1,5 +1,4 @@
-import { google } from "googleapis";
-import type { OAuth2Client } from "google-auth-library";
+import { google, type Auth } from "googleapis";
 import { pool } from "./db.js";
 import { encrypt, decrypt } from "./crypto.js";
 import { cc } from "./cc-client.js";
@@ -93,7 +92,7 @@ export async function saveCredentials(
 
 // ─── Google-specific wrappers (keep so activities don't need to change) ─────
 
-function oauthClient(): OAuth2Client {
+function oauthClient(): Auth.OAuth2Client {
   const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI } = process.env;
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) throw new Error("GOOGLE_CLIENT_ID/SECRET must be set");
   return new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
@@ -102,7 +101,7 @@ function oauthClient(): OAuth2Client {
 // Loads stored tokens, decrypts, and hands back an OAuth2 client with
 // automatic refresh already configured. googleapis persists refreshed
 // access tokens back through the `tokens` event — we save them.
-export async function getAuthClient(userEmail: string): Promise<OAuth2Client> {
+export async function getAuthClient(userEmail: string): Promise<Auth.OAuth2Client> {
   const cred = await getCredentials("google", userEmail);
   if (!cred.refreshToken) {
     throw new Error(`google credential for ${userEmail} has no refresh token — re-authorize via /agent-automations`);
