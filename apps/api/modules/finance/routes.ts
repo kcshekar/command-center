@@ -44,49 +44,144 @@ async function ensureInvoice(tx: SQL, ctx: AuthCtx, entry: { id: string; currenc
   return invoice;
 }
 
+type Zone = "personal" | "professional";
+const isFinanceAdmin = (ctx: AuthCtx) => ctx.role === "owner" || ctx.role === "admin";
+
+// ?zone= on list routes. Business ("professional") rows are owner/admin only.
+function readZone(req: Request, ctx: AuthCtx): Zone | null {
+  const z = new URL(req.url).searchParams.get("zone");
+  if (z === null || z === "") return null;
+  if (z !== "personal" && z !== "professional") throw new HttpError(400, "zone must be personal | professional");
+  if (z === "professional") requireRole(ctx, ["owner", "admin"]);
+  return z;
+}
+function writeZone(z: unknown, ctx: AuthCtx): Zone {
+  const zone = z ?? "personal";
+  if (zone !== "personal" && zone !== "professional") throw new HttpError(400, "zone must be personal | professional");
+  if (zone === "professional") requireRole(ctx, ["owner", "admin"]);
+  return zone;
+}
+// RLS already hides other people's personal rows; this adds the business gate.
+async function assertZoneWrite(ctx: AuthCtx & { tx: SQL }, table: "expenses" | "recurring_bills", id: string) {
+  const [row] = table === "expenses"
+    ? await ctx.tx`SELECT zone FROM expenses WHERE id = ${id}`
+    : await ctx.tx`SELECT zone FROM recurring_bills WHERE id = ${id}`;
+  if (!row) throw new HttpError(404, "not found");
+  if (row.zone === "professional") requireRole(ctx, ["owner", "admin"]);
+}
+
 export const financeRoutes = {
-  // --- Accounts: company-wide, owner/admin only ---
+  // --- Personal vs business money (P2, migration 0046) ---
+  // Every account / bill / expense has a zone. Personal rows are private to
+  // their owner (RLS); business ("professional") rows are shared with the org
+  // and stay owner/admin-only here. Lists take ?zone=personal|professional.
+
   "/api/finance/accounts": {
-    GET: tenantRoute(async (_req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
-      return Response.json(await ctx.tx`SELECT id, name, kind FROM accounts ORDER BY name`);
+    GET: tenantRoute(async (req, ctx) => {
+      const zone = readZone(req, ctx);
+      return Response.json(await ctx.tx`
+        SELECT id, name, kind, zone, balance_cents, balance_updated_at FROM accounts
+        WHERE (${zone}::text IS NULL OR zone = ${zone}) AND (${isFinanceAdmin(ctx)} OR zone = 'personal')
+        ORDER BY name
+      `);
     }),
     POST: tenantRoute(async (req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
-      const { name, kind } = await req.json();
+      const { name, kind, zone: z } = await req.json();
       if (!name || !kind) throw new HttpError(400, "name and kind required");
+      const zone = writeZone(z, ctx);
       const [row] = await ctx.tx`
-        INSERT INTO accounts (org_id, name, kind) VALUES (${ctx.orgId}, ${name}, ${kind}) RETURNING id, name, kind
+        INSERT INTO accounts (org_id, owner_user_id, zone, name, kind)
+        VALUES (${ctx.orgId}, ${ctx.userId}, ${zone}, ${name}, ${kind}) RETURNING id, name, kind, zone
       `;
-      await writeAudit(ctx.tx, ctx, { action: "account:create", resourceType: "account", resourceId: row.id });
+      await writeAudit(ctx.tx, ctx, { action: "account:create", resourceType: "account", resourceId: row.id, metadata: { zone } });
       return Response.json(row, { status: 201 });
     }),
   },
 
-  // --- Recurring bills: company-wide, owner/admin only ---
+  // N9: the manual balance the forecaster compares bills against. null clears it.
+  "/api/finance/accounts/:accountId/balance": {
+    PATCH: tenantRoute(async (req, ctx) => {
+      const { accountId } = req.params;
+      const { balanceCents } = await req.json().catch(() => ({}));
+      if (balanceCents !== null && (typeof balanceCents !== "number" || !Number.isFinite(balanceCents))) {
+        throw new HttpError(400, "balanceCents must be a number or null");
+      }
+      const [acct] = await ctx.tx`SELECT zone FROM accounts WHERE id = ${accountId}`;
+      if (!acct) throw new HttpError(404, "not found");
+      if (acct.zone === "professional") requireRole(ctx, ["owner", "admin"]);
+      const value = balanceCents === null ? null : Math.round(balanceCents);
+      await ctx.tx`
+        UPDATE accounts SET balance_cents = ${value}, balance_updated_at = ${value === null ? null : new Date()}
+        WHERE id = ${accountId}
+      `;
+      await writeAudit(ctx.tx, ctx, { action: "account:set_balance", resourceType: "account", resourceId: accountId });
+      return Response.json({ ok: true });
+    }),
+  },
+
+  // R10: monthly budgets per category, personal only (RLS: owner-only).
+  // GET includes month-to-date personal spend so the UI can show progress.
+  "/api/finance/budgets": {
+    GET: tenantRoute(async (_req, ctx) => Response.json(await ctx.tx`
+      SELECT b.id, b.category, b.monthly_limit_cents,
+             COALESCE(SUM(e.amount_cents), 0)::bigint AS spent_cents
+      FROM budgets b
+      LEFT JOIN expenses e
+        ON lower(e.category) = lower(b.category) AND e.zone = 'personal'
+       AND e.occurred_on >= date_trunc('month', CURRENT_DATE)
+      GROUP BY b.id
+      ORDER BY b.category
+    `)),
+    PUT: tenantRoute(async (req, ctx) => {
+      const { category, monthlyLimitCents } = await req.json().catch(() => ({}));
+      if (typeof category !== "string" || !category.trim()) throw new HttpError(400, "category is required");
+      if (typeof monthlyLimitCents !== "number" || monthlyLimitCents <= 0) throw new HttpError(400, "monthlyLimitCents must be positive");
+      const [row] = await ctx.tx`
+        INSERT INTO budgets (org_id, owner_user_id, category, monthly_limit_cents)
+        VALUES (${ctx.orgId}, ${ctx.userId}, ${category.trim().toLowerCase()}, ${Math.round(monthlyLimitCents)})
+        ON CONFLICT (owner_user_id, lower(category)) DO UPDATE
+          SET monthly_limit_cents = EXCLUDED.monthly_limit_cents, updated_at = now()
+        RETURNING id, category, monthly_limit_cents
+      `;
+      await writeAudit(ctx.tx, ctx, { action: "budget:set", resourceType: "budget", resourceId: row.id });
+      return Response.json(row);
+    }),
+  },
+  "/api/finance/budgets/:budgetId": {
+    DELETE: tenantRoute(async (req, ctx) => {
+      const { budgetId } = req.params;
+      const [row] = await ctx.tx`DELETE FROM budgets WHERE id = ${budgetId} RETURNING id`;
+      if (!row) throw new HttpError(404, "not found");
+      await writeAudit(ctx.tx, ctx, { action: "budget:delete", resourceType: "budget", resourceId: budgetId });
+      return new Response(null, { status: 204 });
+    }),
+  },
+
   "/api/finance/bills": {
-    GET: tenantRoute(async (_req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
+    GET: tenantRoute(async (req, ctx) => {
+      const zone = readZone(req, ctx);
       // Whether a reminder already links back to this bill — shown inline so
       // it's obvious which recurring bills still need one set up.
       return Response.json(await ctx.tx`
-        SELECT rb.id, rb.name, rb.amount_cents, rb.currency, rb.cadence, rb.due_day, rb.category, rb.active,
+        SELECT rb.id, rb.name, rb.amount_cents, rb.currency, rb.cadence, rb.due_day, rb.due_month, rb.category, rb.active, rb.zone,
                min(r.due_on) AS reminder_due_on, count(r.id)::int AS reminder_count
         FROM recurring_bills rb LEFT JOIN reminders r ON r.resource_type = 'bill' AND r.resource_id = rb.id
+        WHERE (${zone}::text IS NULL OR rb.zone = ${zone}) AND (${isFinanceAdmin(ctx)} OR rb.zone = 'personal')
         GROUP BY rb.id
         ORDER BY rb.name
       `);
     }),
     POST: tenantRoute(async (req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
-      const { name, amountCents, currency, cadence, dueDay, category } = await req.json();
+      const { name, amountCents, currency, cadence, dueDay, dueMonth, category, zone: z } = await req.json();
       if (!name || amountCents == null || !cadence || !category) throw new HttpError(400, "missing fields");
+      const zone = writeZone(z, ctx);
       const [row] = await ctx.tx`
-        INSERT INTO recurring_bills (org_id, name, amount_cents, currency, cadence, due_day, category)
-        VALUES (${ctx.orgId}, ${name}, ${amountCents}, ${currency ?? "INR"}, ${cadence}, ${dueDay ?? null}, ${category})
-        RETURNING id, name, amount_cents, currency, cadence, due_day, category
+        INSERT INTO recurring_bills (org_id, owner_user_id, zone, name, amount_cents, currency, cadence, due_day, due_month, category)
+        VALUES (${ctx.orgId}, ${ctx.userId}, ${zone}, ${name}, ${amountCents}, ${currency ?? "INR"}, ${cadence}, ${dueDay ?? null},
+                ${cadence === "yearly" ? dueMonth ?? null : null}, ${category})
+        RETURNING id, name, amount_cents, currency, cadence, due_day, due_month, category, zone
       `;
-      await writeAudit(ctx.tx, ctx, { action: "bill:create", resourceType: "recurring_bill", resourceId: row.id });
+      await writeAudit(ctx.tx, ctx, { action: "bill:create", resourceType: "recurring_bill", resourceId: row.id, metadata: { zone } });
       return Response.json(row, { status: 201 });
     }),
   },
@@ -95,9 +190,9 @@ export const financeRoutes = {
     // the quick pause/resume toggle — COALESCE means an omitted field keeps
     // its current value instead of being wiped.
     PUT: tenantRoute(async (req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
       const { billId } = req.params;
-      const { name, amountCents, currency, cadence, dueDay, category, active } = await req.json();
+      await assertZoneWrite(ctx, "recurring_bills", billId);
+      const { name, amountCents, currency, cadence, dueDay, dueMonth, category, active } = await req.json();
       const [row] = await ctx.tx`
         UPDATE recurring_bills SET
           name = COALESCE(${name ?? null}, name),
@@ -105,6 +200,9 @@ export const financeRoutes = {
           currency = COALESCE(${currency ?? null}, currency),
           cadence = COALESCE(${cadence ?? null}, cadence),
           due_day = COALESCE(${dueDay ?? null}, due_day),
+          -- only yearly bills keep a month; switching cadence away clears it
+          due_month = CASE WHEN COALESCE(${cadence ?? null}, cadence) = 'yearly'
+                           THEN COALESCE(${dueMonth ?? null}, due_month) ELSE NULL END,
           category = COALESCE(${category ?? null}, category),
           active = COALESCE(${active ?? null}, active)
         WHERE id = ${billId}
@@ -115,8 +213,8 @@ export const financeRoutes = {
       return Response.json({ ok: true });
     }),
     DELETE: tenantRoute(async (req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
       const { billId } = req.params;
+      await assertZoneWrite(ctx, "recurring_bills", billId);
       const [row] = await ctx.tx`DELETE FROM recurring_bills WHERE id = ${billId} RETURNING id`;
       if (!row) throw new HttpError(404, "not found");
       await writeAudit(ctx.tx, ctx, { action: "bill:delete", resourceType: "recurring_bill", resourceId: billId });
@@ -124,35 +222,42 @@ export const financeRoutes = {
     }),
   },
 
-  // --- Expenses: company-wide, owner/admin only ---
   "/api/finance/expenses": {
-    GET: tenantRoute(async (_req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
+    GET: tenantRoute(async (req, ctx) => {
+      const zone = readZone(req, ctx);
       return Response.json(await ctx.tx`
-        SELECT e.id, e.account_id, e.amount_cents, e.currency, e.category, e.occurred_on, e.note,
+        SELECT e.id, e.account_id, e.amount_cents, e.currency, e.category, e.occurred_on, e.note, e.zone, e.source,
+               (e.owner_user_id = ${ctx.userId}) AS mine,
                min(r.due_on) AS reminder_due_on, count(r.id)::int AS reminder_count
         FROM expenses e LEFT JOIN reminders r ON r.resource_type = 'expense' AND r.resource_id = e.id
+        WHERE (${zone}::text IS NULL OR e.zone = ${zone}) AND (${isFinanceAdmin(ctx)} OR e.zone = 'personal')
         GROUP BY e.id
         ORDER BY e.occurred_on DESC
       `);
     }),
     POST: tenantRoute(async (req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
-      const { accountId, amountCents, currency, category, occurredOn, note } = await req.json();
+      const { accountId, amountCents, currency, category, occurredOn, note, zone: z } = await req.json();
       if (amountCents == null || !category || !occurredOn) throw new HttpError(400, "missing fields");
+      // No explicit zone → the account's zone (a business card's spend lands in business).
+      let zoneIn = z;
+      if (!zoneIn && accountId) {
+        const [acct] = await ctx.tx`SELECT zone FROM accounts WHERE id = ${accountId}`;
+        zoneIn = acct?.zone;
+      }
+      const zone = writeZone(zoneIn, ctx);
       const [row] = await ctx.tx`
-        INSERT INTO expenses (org_id, account_id, amount_cents, currency, category, occurred_on, note)
-        VALUES (${ctx.orgId}, ${accountId ?? null}, ${amountCents}, ${currency ?? "INR"}, ${category}, ${occurredOn}, ${note ?? null})
-        RETURNING id, amount_cents, category, occurred_on
+        INSERT INTO expenses (org_id, owner_user_id, zone, account_id, amount_cents, currency, category, occurred_on, note)
+        VALUES (${ctx.orgId}, ${ctx.userId}, ${zone}, ${accountId ?? null}, ${amountCents}, ${currency ?? "INR"}, ${category}, ${occurredOn}, ${note ?? null})
+        RETURNING id, amount_cents, category, occurred_on, zone
       `;
-      await writeAudit(ctx.tx, ctx, { action: "expense:create", resourceType: "expense", resourceId: row.id });
+      await writeAudit(ctx.tx, ctx, { action: "expense:create", resourceType: "expense", resourceId: row.id, metadata: { zone } });
       return Response.json(row, { status: 201 });
     }),
   },
   "/api/finance/expenses/:expenseId": {
     PUT: tenantRoute(async (req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
       const { expenseId } = req.params;
+      await assertZoneWrite(ctx, "expenses", expenseId);
       const { accountId, amountCents, currency, category, occurredOn, note } = await req.json();
       if (amountCents == null || !category || !occurredOn) throw new HttpError(400, "missing fields");
       const [row] = await ctx.tx`
@@ -167,23 +272,42 @@ export const financeRoutes = {
       return Response.json({ ok: true });
     }),
     DELETE: tenantRoute(async (req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
       const { expenseId } = req.params;
+      await assertZoneWrite(ctx, "expenses", expenseId);
       const [row] = await ctx.tx`DELETE FROM expenses WHERE id = ${expenseId} RETURNING id`;
       if (!row) throw new HttpError(404, "not found");
       await writeAudit(ctx.tx, ctx, { action: "expense:delete", resourceType: "expense", resourceId: expenseId });
       return new Response(null, { status: 204 });
     }),
   },
+  // D2: move one expense between personal and business. Only its owner may
+  // move it (moving to business shares it with the org; moving back makes it
+  // private again), and business rows need owner/admin.
+  "/api/finance/expenses/:expenseId/zone": {
+    PATCH: tenantRoute(async (req, ctx) => {
+      const { expenseId } = req.params;
+      const { zone: z } = await req.json().catch(() => ({}));
+      if (z !== "personal" && z !== "professional") throw new HttpError(400, "zone must be personal | professional");
+      const [row] = await ctx.tx`SELECT zone, owner_user_id FROM expenses WHERE id = ${expenseId}`;
+      if (!row) throw new HttpError(404, "not found");
+      if (row.owner_user_id !== ctx.userId) throw new HttpError(403, "only the person who recorded this expense can move it");
+      if (z === "professional" || row.zone === "professional") requireRole(ctx, ["owner", "admin"]);
+      await ctx.tx`UPDATE expenses SET zone = ${z} WHERE id = ${expenseId}`;
+      await writeAudit(ctx.tx, ctx, { action: "expense:move_zone", resourceType: "expense", resourceId: expenseId, metadata: { from: row.zone, to: z } });
+      return Response.json({ ok: true, zone: z });
+    }),
+  },
   // Chart-ready aggregation: sum by month + category over a trailing window.
+  // ?zone= narrows to one zone (Today's "This month" asks for personal).
   "/api/finance/expenses/summary": {
     GET: tenantRoute(async (req, ctx) => {
-      requireRole(ctx, ["owner", "admin"]);
+      const zone = readZone(req, ctx);
       const months = Number(new URL(req.url).searchParams.get("months") ?? 6);
       const rows = await ctx.tx`
         SELECT to_char(date_trunc('month', occurred_on), 'YYYY-MM') AS month, category, SUM(amount_cents)::bigint AS total_cents
         FROM expenses
         WHERE occurred_on >= (CURRENT_DATE - (${months}::int * INTERVAL '1 month'))
+          AND (${zone}::text IS NULL OR zone = ${zone}) AND (${isFinanceAdmin(ctx)} OR zone = 'personal')
         GROUP BY 1, 2
         ORDER BY 1, 2
       `;

@@ -50,7 +50,20 @@ export interface InterviewSessionDetail extends InterviewSession {
   rounds: InterviewRound[];
 }
 
+export interface UpcomingRound {
+  id: string;
+  sessionId: string;
+  kind: RoundKind;
+  scheduledAt: string;
+  durationMin: number | null;
+  interviewer: string | null;
+  company: string;
+  role: string;
+}
+
 export const interviewsApi = {
+  upcomingRounds: (withinDays = 7) =>
+    apiFetch<UpcomingRound[]>(`/interview-rounds?withinDays=${withinDays}`),
   listSessions: (status?: SessionStatus) =>
     apiFetch<InterviewSession[]>(`/interview-sessions${status ? "?status=" + status : ""}`),
   getSession: (id: string) =>

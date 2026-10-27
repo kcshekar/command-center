@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { Bell, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -123,16 +124,19 @@ export function NotificationBell() {
                 )}
                 {n.approval_state && (
                   <Badge
-                    variant={n.approval_state === "approved" ? "default" : "destructive"}
+                    variant={n.approval_state === "approved" ? "default" : n.approval_state === "rejected" ? "destructive" : "secondary"}
                     className="w-fit text-[10px]"
                   >
-                    {n.approval_state === "approved" ? "✓ Approved" : "✗ Rejected"}
+                    {n.approval_state === "approved" ? "✓ Approved" : n.approval_state === "rejected" ? "✗ Rejected" : "Expired"}
                   </Badge>
                 )}
               </li>
             ))}
           </ul>
         )}
+        <Link href="/inbox" onClick={() => setOpen(false)} className="block border-t p-2.5 text-center text-xs font-medium text-primary hover:bg-muted/50">
+          Open Inbox
+        </Link>
       </DropdownMenuContent>
     </DropdownMenu>
   );

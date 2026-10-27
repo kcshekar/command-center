@@ -14,6 +14,9 @@ const ALL_SCOPES = [
   "reminders:read",
   "reminders:write",
   "expenses:write",
+  "expenses:read",
+  "occasions:read",
+  "life:read",
   "prices:write",
   "prices:read",
   "credentials:read",
@@ -82,10 +85,10 @@ export const cc = {
     return res.refs;
   },
 
-  updateNotification: (routeKey: string, refs: PostedRef[], text: string, blocks?: unknown[]) =>
+  updateNotification: (routeKey: string, refs: PostedRef[], text: string, blocks?: unknown[], approvalState?: "approved" | "rejected" | "expired") =>
     call("/api/integrations/notify-update", {
       method: "POST",
-      body: JSON.stringify({ routeKey, refs, text, blocks }),
+      body: JSON.stringify({ routeKey, refs, text, blocks, approvalState }),
     }),
 
   dueReminders: (days = 7) => call<DueReminder[]>(`/api/integrations/reminders/due?days=${days}`),
@@ -110,6 +113,8 @@ export const cc = {
     note?: string;
     source: string;
     externalId: string;
+    userId?: string;                          // owner; CC defaults to the token's user
+    zone?: "personal" | "professional";      // CC defaults to personal
   }) => call<{ id: string; amountCents: string }>("/api/integrations/expenses", { method: "POST", body: JSON.stringify(params) }),
 
   createReminder: (params: {
@@ -254,6 +259,38 @@ export const cc = {
       skills: string[]; keywords: string[]; antiKeywords: string[];
       bio: string | null; metadata: Record<string, unknown>;
     }>(`/api/integrations/user-profile?userId=${encodeURIComponent(userId)}`),
+
+  // N5 — one day's spending by category (zone is required by CC).
+  dailyExpenses: (userId: string, zone: "personal" | "professional", date: string) =>
+    call<{ date: string; zone: "personal" | "professional"; categories: import("./activities/spend-report.js").DayCategory[] }>(
+      `/api/integrations/expenses/daily?userId=${encodeURIComponent(userId)}&zone=${zone}&date=${date}`
+    ),
+
+  // R11 / R7 / R9 — life trackers.
+  lifeHabits: (userId: string) =>
+    call<import("./activities/life-reports.js").HabitDays[]>(`/api/integrations/life/habits?userId=${encodeURIComponent(userId)}`),
+  lifeGroceries: (userId: string) =>
+    call<Array<{ name: string }>>(`/api/integrations/life/groceries?userId=${encodeURIComponent(userId)}`),
+  lifeVehicles: (userId: string) =>
+    call<import("./activities/life-reports.js").Vehicle[]>(`/api/integrations/life/vehicles?userId=${encodeURIComponent(userId)}`),
+
+  // R3 — the user's birthdays / anniversaries.
+  occasions: (userId: string) =>
+    call<import("./activities/occasions.js").Occasion[]>(`/api/integrations/occasions?userId=${encodeURIComponent(userId)}`),
+
+  // N9 / R13 / R10 — money reads for one user (zone required where it applies).
+  financeBills: (userId: string, zone: "personal" | "professional") =>
+    call<import("./activities/money-reports.js").Bill[]>(
+      `/api/integrations/finance/bills?userId=${encodeURIComponent(userId)}&zone=${zone}`
+    ),
+  financeBalances: (userId: string, zone: "personal" | "professional") =>
+    call<import("./activities/money-reports.js").Balance[]>(
+      `/api/integrations/finance/balances?userId=${encodeURIComponent(userId)}&zone=${zone}`
+    ),
+  financeBudgets: (userId: string, date: string) =>
+    call<{ date: string; budgets: import("./activities/money-reports.js").BudgetStatus[] }>(
+      `/api/integrations/finance/budgets?userId=${encodeURIComponent(userId)}&date=${date}`
+    ),
 
   // SSE push — emit a user-scoped event the UI can react to. Best-effort:
   // call sites should not await / propagate failures.

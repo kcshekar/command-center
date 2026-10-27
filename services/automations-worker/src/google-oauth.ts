@@ -65,7 +65,7 @@ export async function saveCredentials(
        refresh_token_iv        = COALESCE(EXCLUDED.refresh_token_iv,        external_credentials.refresh_token_iv),
        token_expiry            = EXCLUDED.token_expiry,
        scopes                  = EXCLUDED.scopes,
-       metadata                = EXCLUDED.metadata,
+       metadata                = external_credentials.metadata || EXCLUDED.metadata,
        updated_at              = now()`,
     [
       service, userId, label,
@@ -133,7 +133,8 @@ export async function getAuthClient(userEmail: string): Promise<OAuth2Client> {
 // to the generic saveCredentials under service='google'.
 export async function saveTokens(
   userEmail: string,
-  tokens: { access_token: string; refresh_token: string; expiry_date: number; scope?: string | null }
+  tokens: { access_token: string; refresh_token: string; expiry_date: number; scope?: string | null },
+  metadata?: Record<string, unknown>
 ) {
   const scopes = tokens.scope ? tokens.scope.split(/\s+/).filter(Boolean) : [];
   await saveCredentials("google", userEmail, {
@@ -141,6 +142,7 @@ export async function saveTokens(
     refreshToken: tokens.refresh_token,
     expiryDate: tokens.expiry_date,
     scopes,
+    metadata,
   });
 }
 

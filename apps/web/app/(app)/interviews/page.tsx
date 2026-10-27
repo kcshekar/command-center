@@ -60,6 +60,45 @@ export default function InterviewsPage() {
   const [sessions, setSessions] = useState<InterviewSession[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Board (Kanban) is the default view; #list deep-links the detailed list.
+  const [view, setView] = useState<"board" | "list">("board");
+  useEffect(() => {
+    const fromHash = () => setView(window.location.hash === "#list" ? "list" : "board");
+    fromHash();
+    window.addEventListener("hashchange", fromHash);
+    return () => window.removeEventListener("hashchange", fromHash);
+  }, []);
+  function showView(v: "board" | "list") {
+    setView(v);
+    history.replaceState(null, "", v === "list" ? "#list" : window.location.pathname);
+  }
+  // Card click on the board opens that session expanded in the list.
+  function openInList(id: string) {
+    setExpandedId(id);
+    showView("list");
+    requestAnimationFrame(() => document.getElementById(`session-${id}`)?.scrollIntoView({ block: "start", behavior: "smooth" }));
+  }
+
+  // Optimistic status move (board drag/drop or "Move to"). Stamps
+  // appliedAt / decisionAt the first time a session reaches those stages.
+  async function moveSession(s: InterviewSession, status: SessionStatus) {
+    if (s.status === status) return;
+    const before = sessions;
+    setSessions((prev) => prev?.map((x) => (x.id === s.id ? { ...x, status } : x)) ?? prev);
+    const now = new Date().toISOString();
+    try {
+      await interviewsApi.updateSession(s.id, {
+        status,
+        ...(status === "applied" && !s.appliedAt ? { appliedAt: now } : {}),
+        ...(["offered", "rejected", "withdrawn"].includes(status) && !s.decisionAt ? { decisionAt: now } : {}),
+      });
+      toast.success(`${s.company} → ${status}`);
+      void refresh();
+    } catch (e) {
+      setSessions(before);
+      toast.error(apiErrorMessage(e, "Could not move this session"));
+    }
+  }
 
   const refresh = useCallback(async () => {
     try { setSessions(await interviewsApi.listSessions()); setErr(null); }
@@ -108,8 +147,21 @@ export default function InterviewsPage() {
         <div>
           <h1 className="text-xl font-heading font-semibold tracking-tight">Interviews</h1>
           <p className="text-sm text-muted-foreground">
-            A3 creates sessions from jobs you prep for; A9 tailors a resume + cover letter per session; A4 tracks the per-round history here. Click a card to expand.
+            Your job pipeline. Prep on a job creates a session here; calendar sync and mail triage add rounds. Drag a card to move it, or open it for rounds, notes and tailored docs.
           </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+        <div className="inline-flex rounded-lg border bg-card p-0.5" role="group" aria-label="View">
+          {(["board", "list"] as const).map((v) => (
+            <button
+              key={v}
+              aria-pressed={view === v}
+              onClick={() => showView(v)}
+              className={cn("rounded-md px-3 py-1 text-xs font-medium capitalize transition-colors", view === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              {v}
+            </button>
+          ))}
         </div>
         <Dialog open={newOpen} onOpenChange={setNewOpen}>
           <DialogTrigger render={<Button size="sm" className="gap-1.5" />}>
@@ -128,6 +180,7 @@ export default function InterviewsPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {err && (
@@ -149,6 +202,8 @@ export default function InterviewsPage() {
             Click <strong>Prep</strong> on a lead in <code>/jobs</code> to create one, or add a manual session.
           </p>
         </div>
+      ) : view === "board" ? (
+        <Board grouped={grouped} onMove={(s, status) => void moveSession(s, status)} onOpen={openInList} />
       ) : (
         (SESSION_STATUSES).filter((s) => grouped[s].length > 0).map((status) => (
           <section key={status} className="flex flex-col gap-2">
@@ -171,6 +226,116 @@ export default function InterviewsPage() {
         ))
       )}
     </div>
+  );
+}
+
+// --- Board (Kanban) ---------------------------------------------------------
+// Four active stages are drop targets; Closed (rejected + withdrawn) is
+// read-only because a drop there would be ambiguous — use "Move to".
+
+const ACTIVE: SessionStatus[] = ["researching", "applied", "interviewing", "offered"];
+
+function Board({
+  grouped, onMove, onOpen,
+}: {
+  grouped: Record<SessionStatus, InterviewSession[]>;
+  onMove: (s: InterviewSession, status: SessionStatus) => void;
+  onOpen: (id: string) => void;
+}) {
+  const [over, setOver] = useState<SessionStatus | null>(null);
+  const byId = useMemo(
+    () => new Map(Object.values(grouped).flat().map((s) => [s.id, s])),
+    [grouped],
+  );
+  const closed = [...grouped.rejected, ...grouped.withdrawn];
+
+  function drop(e: React.DragEvent, status: SessionStatus) {
+    e.preventDefault();
+    setOver(null);
+    const s = byId.get(e.dataTransfer.getData("text/plain"));
+    if (s) onMove(s, status);
+  }
+
+  return (
+    <div className="-mx-1 overflow-x-auto pb-2">
+      <div className="grid min-w-[880px] grid-cols-5 gap-3 px-1">
+        {ACTIVE.map((status) => (
+          <section
+            key={status}
+            aria-label={`${status} column`}
+            onDragOver={(e) => { e.preventDefault(); setOver(status); }}
+            onDragLeave={() => setOver((o) => (o === status ? null : o))}
+            onDrop={(e) => drop(e, status)}
+            className={cn(
+              "flex min-h-[220px] flex-col gap-2 rounded-xl border bg-muted/30 p-2 transition-colors",
+              over === status && "border-primary bg-primary/5",
+            )}
+          >
+            <ColumnHead status={status} count={grouped[status].length} />
+            {grouped[status].map((s) => <BoardCard key={s.id} s={s} onMove={onMove} onOpen={onOpen} />)}
+            {grouped[status].length === 0 && (
+              <p className="px-1 py-3 text-xs text-muted-foreground">Drop a card here</p>
+            )}
+          </section>
+        ))}
+        <section aria-label="closed column" className="flex min-h-[220px] flex-col gap-2 rounded-xl border border-dashed p-2">
+          <div className="flex items-center justify-between px-1 pt-0.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+            <span>Closed</span><span className="font-mono">{closed.length}</span>
+          </div>
+          {closed.map((s) => <BoardCard key={s.id} s={s} onMove={onMove} onOpen={onOpen} />)}
+          {closed.length === 0 && <p className="px-1 py-3 text-xs text-muted-foreground">Rejected and withdrawn sessions land here.</p>}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function ColumnHead({ status, count }: { status: SessionStatus; count: number }) {
+  return (
+    <div className="flex items-center justify-between px-1 pt-0.5">
+      <Badge className={cn("text-[10px] capitalize", STATUS_STYLE[status])}>{status}</Badge>
+      <span className="font-mono text-[11px] text-muted-foreground">{count}</span>
+    </div>
+  );
+}
+
+function BoardCard({
+  s, onMove, onOpen,
+}: {
+  s: InterviewSession;
+  onMove: (s: InterviewSession, status: SessionStatus) => void;
+  onOpen: (id: string) => void;
+}) {
+  const closed = s.status === "rejected" || s.status === "withdrawn";
+  return (
+    <article
+      draggable
+      onDragStart={(e) => { e.dataTransfer.setData("text/plain", s.id); e.dataTransfer.effectAllowed = "move"; }}
+      className={cn(
+        "flex cursor-grab flex-col gap-1.5 rounded-lg border bg-card p-2.5 text-sm shadow-sm active:cursor-grabbing",
+        closed && "opacity-75",
+      )}
+    >
+      <button onClick={() => onOpen(s.id)} className="flex flex-col items-start gap-0.5 text-left">
+        <span className="font-semibold [overflow-wrap:anywhere]">{s.company}</span>
+        <span className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{s.role}</span>
+      </button>
+      <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] text-muted-foreground">
+        <span>
+          {s.roundCount ? `${s.roundCount} round${s.roundCount === 1 ? "" : "s"}` : "No rounds"}
+          {s.appliedAt && ` · applied ${fmtDate(s.appliedAt)}`}
+        </span>
+        {closed && <Badge className={cn("text-[10px] capitalize", STATUS_STYLE[s.status])}>{s.status}</Badge>}
+      </div>
+      <select
+        aria-label={`Move ${s.company} to`}
+        value={s.status}
+        onChange={(e) => onMove(s, e.target.value as SessionStatus)}
+        className="h-7 rounded-md border bg-background px-1.5 text-[11px] text-muted-foreground"
+      >
+        {SESSION_STATUSES.map((st) => <option key={st} value={st}>{st === s.status ? `Stage: ${st}` : `Move to ${st}`}</option>)}
+      </select>
+    </article>
   );
 }
 
@@ -216,7 +381,7 @@ function SessionCard({
   const hasCover = !!session.metadata.coverLetterKnowledgeItemId;
 
   return (
-    <li className="flex flex-col gap-0 rounded-xl border bg-card">
+    <li id={`session-${session.id}`} className="flex scroll-mt-4 flex-col gap-0 rounded-xl border bg-card">
       <button
         type="button"
         onClick={onToggle}

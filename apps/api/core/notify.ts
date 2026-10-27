@@ -104,14 +104,22 @@ export async function updateNotification(
   orgId: string,
   routeKey: string,
   refs: PostedRef[],
-  args: { text: string; blocks?: unknown[] }
+  args: { text: string; blocks?: unknown[]; approvalState?: "approved" | "rejected" | "expired" }
 ): Promise<void> {
   for (const ref of refs) {
     if (ref.channel === "in_app") {
+      // approvalState settles a still-pending approval (first decision wins,
+      // so an earlier in-app/Slack click is never overwritten).
+      const state = args.approvalState ?? null;
       await tx`
         UPDATE notifications
         SET text = ${args.text},
-            blocks = ${args.blocks ? JSON.stringify(args.blocks) : null}::text::jsonb
+            blocks = ${args.blocks ? JSON.stringify(args.blocks) : null}::text::jsonb,
+            approval_state = CASE WHEN is_approval AND approval_state IS NULL AND ${state}::text IS NOT NULL
+                                  THEN ${state}::text ELSE approval_state END,
+            approval_decided_at = CASE WHEN is_approval AND approval_decided_at IS NULL AND ${state}::text IS NOT NULL
+                                       THEN now() ELSE approval_decided_at END,
+            read_at = CASE WHEN ${state}::text IS NOT NULL THEN COALESCE(read_at, now()) ELSE read_at END
         WHERE id = ${ref.ts} AND org_id = ${orgId}
       `;
       continue;

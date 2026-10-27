@@ -1,9 +1,23 @@
 import { apiFetch } from "./api";
 
+// Personal rows are private to their owner; business ("professional") rows
+// are shared with the org and need owner/admin (P2, migration 0046).
+export type Zone = "personal" | "professional";
+const zq = (zone?: Zone) => (zone ? `zone=${zone}` : "");
+
 export interface Account {
   id: string;
   name: string;
   kind: string;
+  zone: Zone;
+  balance_cents: string | number | null;   // N9: manual balance, null = not set
+  balance_updated_at: string | null;
+}
+export interface Budget {
+  id: string;
+  category: string;
+  monthly_limit_cents: string | number;
+  spent_cents: string | number;           // personal spend this month in the category
 }
 export interface RecurringBill {
   id: string;
@@ -12,8 +26,10 @@ export interface RecurringBill {
   currency: string;
   cadence: string;
   due_day: number | null;
+  due_month: number | null;   // yearly bills only (R13 renewals)
   category: string;
   active: boolean;
+  zone: Zone;
   reminder_due_on: string | null;
   reminder_count: number;
 }
@@ -25,6 +41,9 @@ export interface Expense {
   category: string;
   occurred_on: string;
   note: string | null;
+  zone: Zone;
+  source: string | null;     // e.g. "gmail" when filed by inbox triage
+  mine: boolean;             // recorded by the current user (only they can move it)
   reminder_due_on: string | null;
   reminder_count: number;
 }
@@ -119,24 +138,32 @@ export interface RecommendationsResponse {
 }
 
 export const financeApi = {
-  listAccounts: () => apiFetch<Account[]>("/finance/accounts"),
+  listAccounts: (zone?: Zone) => apiFetch<Account[]>(`/finance/accounts?${zq(zone)}`),
+  setAccountBalance: (accountId: string, balanceCents: number | null) =>
+    apiFetch(`/finance/accounts/${accountId}/balance`, { method: "PATCH", body: JSON.stringify({ balanceCents }) }),
+  listBudgets: () => apiFetch<Budget[]>("/finance/budgets"),
+  setBudget: (category: string, monthlyLimitCents: number) =>
+    apiFetch<Budget>("/finance/budgets", { method: "PUT", body: JSON.stringify({ category, monthlyLimitCents }) }),
+  deleteBudget: (budgetId: string) => apiFetch(`/finance/budgets/${budgetId}`, { method: "DELETE" }),
   createAccount: (params: { name: string; kind: string }) => apiFetch<Account>("/finance/accounts", { method: "POST", body: JSON.stringify(params) }),
 
-  listBills: () => apiFetch<RecurringBill[]>("/finance/bills"),
-  createBill: (params: { name: string; amountCents: number; currency?: string; cadence: string; dueDay?: number; category: string }) =>
+  listBills: (zone?: Zone) => apiFetch<RecurringBill[]>(`/finance/bills?${zq(zone)}`),
+  createBill: (params: { name: string; amountCents: number; currency?: string; cadence: string; dueDay?: number; dueMonth?: number; category: string; zone?: Zone }) =>
     apiFetch<RecurringBill>("/finance/bills", { method: "POST", body: JSON.stringify(params) }),
   setBillActive: (billId: string, active: boolean) => apiFetch(`/finance/bills/${billId}`, { method: "PUT", body: JSON.stringify({ active }) }),
-  updateBill: (billId: string, params: { name: string; amountCents: number; currency?: string; cadence: string; dueDay?: number; category: string }) =>
+  updateBill: (billId: string, params: { name: string; amountCents: number; currency?: string; cadence: string; dueDay?: number; dueMonth?: number; category: string }) =>
     apiFetch(`/finance/bills/${billId}`, { method: "PUT", body: JSON.stringify(params) }),
   deleteBill: (billId: string) => apiFetch(`/finance/bills/${billId}`, { method: "DELETE" }),
 
-  listExpenses: () => apiFetch<Expense[]>("/finance/expenses"),
-  createExpense: (params: { accountId?: string; amountCents: number; currency?: string; category: string; occurredOn: string; note?: string }) =>
+  listExpenses: (zone?: Zone) => apiFetch<Expense[]>(`/finance/expenses?${zq(zone)}`),
+  createExpense: (params: { accountId?: string; amountCents: number; currency?: string; category: string; occurredOn: string; note?: string; zone?: Zone }) =>
     apiFetch<Expense>("/finance/expenses", { method: "POST", body: JSON.stringify(params) }),
   updateExpense: (expenseId: string, params: { accountId?: string; amountCents: number; currency?: string; category: string; occurredOn: string; note?: string }) =>
     apiFetch(`/finance/expenses/${expenseId}`, { method: "PUT", body: JSON.stringify(params) }),
   deleteExpense: (expenseId: string) => apiFetch(`/finance/expenses/${expenseId}`, { method: "DELETE" }),
-  expenseSummary: (months = 6) => apiFetch<ExpenseSummaryRow[]>(`/finance/expenses/summary?months=${months}`),
+  moveExpense: (expenseId: string, zone: Zone) =>
+    apiFetch<{ ok: true; zone: Zone }>(`/finance/expenses/${expenseId}/zone`, { method: "PATCH", body: JSON.stringify({ zone }) }),
+  expenseSummary: (months = 6, zone?: Zone) => apiFetch<ExpenseSummaryRow[]>(`/finance/expenses/summary?months=${months}&${zq(zone)}`),
 
   listProjects: () => apiFetch<FinanceProject[]>("/finance/projects"),
   createProject: (params: { name: string; secretsProjectId?: string }) => apiFetch<FinanceProject>("/finance/projects", { method: "POST", body: JSON.stringify(params) }),

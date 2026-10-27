@@ -30,6 +30,13 @@ export interface InAppNotification {
   created_at: string;
 }
 
+// "automations.digest" → "Digest". Route keys are config names; the title
+// line already names the automation, so the meta line only needs the kind.
+export function routeLabel(key: string): string {
+  const last = key.split(".").pop() || key;
+  return last.charAt(0).toUpperCase() + last.slice(1).replace(/[-_]/g, " ");
+}
+
 export const notificationsApi = {
   listRoutes: () => apiFetch<NotificationRoute[]>("/notifications/routes"),
 

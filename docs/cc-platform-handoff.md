@@ -56,12 +56,12 @@ Monorepo at `/Users/chandrashekar/Documents/Workspace/personal/memoryAllocator`.
 
 ## Recipe: adding a new automation (A10 …)
 1. **Decide the trigger.** Scheduled (Temporal cron) vs. user-triggered (POST → `temporalClient.start`) vs. event-driven (inbox-triage dispatcher branch).
-2. **Add any DB tables/columns** via a new migration in `apps/api/migrations/00NN_*.sql`. For cross-tenant worker reads, write a `SECURITY DEFINER` function alongside.
+2. **Add any DB tables/columns** via a new migration in `apps/api/migrations/00NN_*.sql`. For cross-tenant worker reads, write a `SECURITY DEFINER` function alongside. Money tables (`accounts`, `expenses`, `recurring_bills`) carry `owner_user_id` + `zone` (`personal` private to the owner, `professional` shared with the org; migration 0046) — every finance query an automation makes must name the zone.
 3. **API side** — add module under `apps/api/modules/<thing>/`. For routes the worker calls, use the `tenantRoute` + scope middleware already in use; mint the scope string.
 4. **Integration endpoint for worker** — add handler under `apps/api/modules/integrations/routes.ts` with service-token-auth; re-enter `withTenantTx(userId, orgId)` using the explicit userId.
 5. **Worker side** — add activity in `services/automations-worker/src/activities/<name>.ts`, export from `activities/index.ts`. Add workflow in `workflows/<name>.ts`, export from `workflows/index.ts`.
 6. **cc-client helper** if the worker needs a new CC endpoint — add typed function in `services/automations-worker/src/cc-client.ts`.
-7. **Schedule** — register in `services/automations-worker/src/scripts/init-schedules.ts` with IST timezone. Run `pnpm schedules:init` once. (The `email` positional is parsed with `process.argv.slice(2).find(a => /@/.test(a))` because an earlier `--` arg bug once consumed argv[2].)
+7. **Schedule** — per-user automations: add a catalog row with `schedule_template` (`workflowType`, `cron`, `perAccount`, `args` with `$userId`/`$email`/`$zone`/`$digest`/`$approval`; `$zone` is the pinned Gmail account's Finance zone) in a migration; enabling the grant in CC creates `<automationId>:<userId>[:<email>]` schedules (`apps/api/core/automation-schedules.ts`, migration 0045). Org-wide sweeps only: register in `services/automations-worker/src/scripts/init-schedules.ts` (system schedules, no `:` in the id) and run `pnpm schedules:init`.
 8. **UI** — new page under `apps/web/app/(app)/<slug>/`, nav entry in `apps/web/lib/nav-items.ts`, API client in `apps/web/lib/<slug>-api.ts`, live refresh via `useLiveEvents`.
 9. **Emit an SSE event** at the end of the happy-path activity so the UI reacts.
 10. **Verify at the phase boundary** (user rule from [[user-tech-flow]]) — don't ask for verify steps before each change.
@@ -69,8 +69,8 @@ Monorepo at `/Users/chandrashekar/Documents/Workspace/personal/memoryAllocator`.
 ## Dev commands (local)
 - API: `cd apps/api && bun --hot --env-file=../../.env index.ts` (writes to `/tmp/cc-api-logs/api.log` if you redirect).
 - Web: `cd apps/web && pnpm dev`.
-- Worker: `cd services/automations-worker && pnpm dev` (tsx watch; auto-reloads on file edits).
-- Schedules init: `cd services/automations-worker && pnpm schedules:init <email>`.
+- Worker: `cd services/automations-worker && pnpm worker` (tsx watch; auto-reloads on file edits).
+- Schedules init (system schedules only): `cd services/automations-worker && pnpm schedules:init`.
 - Typecheck: `bunx tsc --noEmit` in each `apps/*`, `npx tsc --noEmit` in the worker. Worker has a **pre-existing** `google-auth-library` resolution error in `google-oauth.ts` — unrelated to A7 work.
 
 ## Pending at session close (2026-10-26)

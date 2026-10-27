@@ -195,6 +195,24 @@ export const interviewRoutes = {
   },
 
   "/api/interview-rounds": {
+    // Upcoming rounds across all of the user's sessions (Today page).
+    // ?withinDays=N, default 7, capped at 60.
+    GET: tenantRoute(async (req, ctx) => {
+      const n = Number(new URL(req.url).searchParams.get("withinDays") ?? 7);
+      const days = Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), 1), 60) : 7;
+      const rows = await ctx.tx`
+        SELECT r.id, r.session_id AS "sessionId", r.kind,
+               r.scheduled_at AS "scheduledAt", r.duration_min AS "durationMin",
+               r.interviewer, s.company, s.role
+        FROM interview_rounds r
+        JOIN interview_sessions s ON s.id = r.session_id
+        WHERE r.scheduled_at >= now()
+          AND r.scheduled_at <  now() + (${days}::int * INTERVAL '1 day')
+        ORDER BY r.scheduled_at
+        LIMIT 50
+      `;
+      return Response.json(rows);
+    }),
     POST: tenantRoute(async (req, ctx) => {
       const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
       const sessionId = asString(body.sessionId ?? body.session_id);

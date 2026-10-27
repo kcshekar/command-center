@@ -10,13 +10,14 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { NAV_ITEMS } from "@/lib/nav-items";
+import { AREA_LABEL, useNavItems } from "@/lib/nav-items";
 
 // Command-palette-first navigation, per the brief. Cmd+K / Ctrl+K from
 // anywhere inside the app shell.
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const router = useRouter();
+  const navItems = useNavItems();
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -40,10 +41,11 @@ export function CommandPalette() {
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
         <CommandGroup heading="Navigate">
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <CommandItem key={item.href} onSelect={() => go(item.href)}>
               <item.icon className="size-4" />
               {item.label}
+              {item.area && <span className="ml-auto text-xs text-muted-foreground">{AREA_LABEL[item.area]}</span>}
             </CommandItem>
           ))}
         </CommandGroup>

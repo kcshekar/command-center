@@ -19,6 +19,7 @@ export function getUserCredentialsDek(): string {
 // across the DB.
 export const KNOWN_SERVICES = [
   "keepa",
+  "openweather", // N15: weather + AQI in the morning brief
   "openai",
   "anthropic",
   "replicate",

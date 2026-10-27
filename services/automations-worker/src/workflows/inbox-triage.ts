@@ -4,6 +4,7 @@ import { mailReplyWorkflow } from "./mail-reply.js";
 
 const {
   fetchGmailHistory,
+  commitGmailCursor,
   classifyEmailOllama,
   postNotification,
   postApprovalNotification,
@@ -24,6 +25,7 @@ export interface TriageInput {
   digestRouteKey: string;   // e.g. "automations.digest"
   approvalRouteKey: string; // e.g. "automations.approval"
   userId?: string;          // A5.1: owning user for job_posting → A2 chain
+  zone?: "personal" | "professional"; // P2: zone of this Gmail account (grant config); expenses land here
 }
 
 interface ApprovalPayload {
@@ -34,31 +36,16 @@ interface ApprovalPayload {
 }
 
 // Named Update — CC's slack-socket handler dispatches this via the worker
-// callback server (see src/callback-server.ts).
+// callback server (see src/callback-server.ts). Lives on trashApprovalWorkflow;
+// the button value carries that child's workflowId.
 export const submitApproval = wf.defineUpdate<{ success: boolean }, [ApprovalPayload]>("submitApproval");
 
-export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed: number; proposed: number; ingestFailed: number }> {
-  // P0 #3 (race fix): register the Update handler BEFORE any I/O so a
-  // fast-arriving button click can't miss it. Cheap to register early even
-  // though the update can't actually fire until we've posted the card.
-  let state: "pending" | "approved" | "rejected" = "pending";
-  let approver = "";
-  wf.setHandler(
-    submitApproval,
-    (p) => {
-      state = p.decision;
-      approver = p.approverSlackId;
-      return { success: true };
-    },
-    {
-      validator: (_p) => {
-        if (state !== "pending") throw new Error(`already processed as ${state}`);
-      },
-    }
-  );
-
-  const messages = await fetchGmailHistory(input.userEmail);
-  if (messages.length === 0) return { trashed: 0, proposed: 0, ingestFailed: 0 };
+export async function inboxTriageWorkflow(input: TriageInput): Promise<{ proposed: number; ingestFailed: number }> {
+  const { messages, historyId } = await fetchGmailHistory(input.userEmail);
+  if (messages.length === 0) {
+    await commitGmailCursor(input.userEmail, historyId);
+    return { proposed: 0, ingestFailed: 0 };
+  }
 
   // Classify, bucket, and ingest side-effect-free categories inline.
   //   transactional_bank → expense (deterministic parser → Ollama fallback)
@@ -74,18 +61,20 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed
   let ingestFailed = 0;
 
   for (const m of messages) {
-    let category = "unclassified";
-    try {
-      const c = await classifyEmailOllama({ subject: m.subject, snippet: m.snippet, from: m.from });
-      category = c.category;
-    } catch {
-      /* keep as unclassified */
-    }
+    // No catch: if Ollama is unreachable the run fails here, the cursor is
+    // never committed, and the next tick replays this batch. Downstream
+    // ingests are idempotent on (source, externalId) so replays are safe.
+    const c = await classifyEmailOllama({ subject: m.subject, snippet: m.snippet, from: m.from });
+    const category = c?.category ?? "unclassified";
     (perCategory[category] ??= []).push({ id: m.id, subject: m.subject, snippet: m.snippet, from: m.from });
 
     if (category === "transactional_bank") {
       try {
-        const r = await ingestExpenseFromEmail(m.id, { from: m.from, subject: m.subject, snippet: m.snippet });
+        const r = await ingestExpenseFromEmail(
+          m.id,
+          { from: m.from, subject: m.subject, snippet: m.snippet },
+          input.userId ? { userId: input.userId, zone: input.zone ?? "personal" } : undefined,
+        );
         if (r.ok) expensesIngested++;
       } catch {
         ingestFailed++;
@@ -145,14 +134,56 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed
       ? `\n_Ingested: ${expensesIngested} expense(s), ${billsIngested} bill reminder(s), ${jobsIngested} job lead(s), ${replyQueued} reply queue(s), ${interviewsIngested} interview(s)${ingestFailed ? `, ${ingestFailed} failed` : ""}._`
       : "";
 
+  // Everything above is ingested — safe to advance. Committing before the
+  // trash child means a later failure can at worst skip a trash proposal.
+  await commitGmailCursor(input.userEmail, historyId);
+
   // Nothing to approve → still post a digest so the owner sees the sweep ran.
   if (trashCandidates.length === 0) {
     await postNotification(
       input.digestRouteKey,
       `Inbox sweep: ${messages.length} new, nothing to trash.${ingestionSummary}`
     );
-    return { trashed: 0, proposed: 0, ingestFailed };
+    return { proposed: 0, ingestFailed };
   }
+
+  // The 24h approval wait runs in an abandoned child so this run completes
+  // now — otherwise the schedule's SKIP overlap policy blocks every 15-min
+  // tick until someone clicks the card.
+  await wf.startChild(trashApprovalWorkflow, {
+    args: [{ userEmail: input.userEmail, approvalRouteKey: input.approvalRouteKey, candidates: trashCandidates }],
+    workflowId: `trash-approval-${wf.workflowInfo().workflowId}`,
+    parentClosePolicy: wf.ParentClosePolicy.PARENT_CLOSE_POLICY_ABANDON,
+  });
+  return { proposed: trashCandidates.length, ingestFailed };
+}
+
+export interface TrashApprovalInput {
+  userEmail: string;
+  approvalRouteKey: string;
+  candidates: Array<{ id: string; subject: string; from: string }>;
+}
+
+export async function trashApprovalWorkflow(input: TrashApprovalInput): Promise<{ trashed: number }> {
+  // P0 #3 (race fix): register the Update handler BEFORE any I/O so a
+  // fast-arriving button click can't miss it.
+  let state: "pending" | "approved" | "rejected" = "pending";
+  let approver = "";
+  wf.setHandler(
+    submitApproval,
+    (p) => {
+      state = p.decision;
+      approver = p.approverSlackId;
+      return { success: true };
+    },
+    {
+      validator: (_p) => {
+        if (state !== "pending") throw new Error(`already processed as ${state}`);
+      },
+    }
+  );
+
+  const trashCandidates = input.candidates;
 
   // Post the approval card. Include workflowId + actionId in each button so
   // the socket-mode handler can round-trip it back to us.
@@ -188,8 +219,8 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed
   const gotDecision = await wf.condition(() => state !== "pending", "24 hours");
 
   if (!gotDecision) {
-    await updateApprovalNotification(input.approvalRouteKey, refs, "⌛ Approval expired after 24h — no emails were moved.");
-    return { trashed: 0, proposed: trashCandidates.length, ingestFailed };
+    await updateApprovalNotification(input.approvalRouteKey, refs, "⌛ Approval expired after 24h — no emails were moved.", "expired");
+    return { trashed: 0 };
   }
 
   const decision = state as "approved" | "rejected";
@@ -197,15 +228,17 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ trashed
   if (decision === "rejected") {
     await updateApprovalNotification(
       input.approvalRouteKey, refs,
-      `❌ Rejected${approver ? ` by <@${approver}>` : ""} — nothing moved.`
+      `❌ Rejected${approver ? ` by <@${approver}>` : ""} — nothing moved.`,
+      "rejected"
     );
-    return { trashed: 0, proposed: trashCandidates.length, ingestFailed };
+    return { trashed: 0 };
   }
 
   const { trashed } = await trashGmailMessages(input.userEmail, trashCandidates.map((m) => m.id));
   await updateApprovalNotification(
     input.approvalRouteKey, refs,
-    `✅ Approved${approver ? ` by <@${approver}>` : ""} — ${trashed} email(s) moved to trash.`
+    `✅ Approved${approver ? ` by <@${approver}>` : ""} — ${trashed} email(s) moved to trash.`,
+    "approved"
   );
-  return { trashed, proposed: trashCandidates.length, ingestFailed };
+  return { trashed };
 }

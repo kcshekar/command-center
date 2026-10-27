@@ -35,6 +35,7 @@ const CATEGORY_DOT: Record<string, string> = {
   loan: "bg-chart-2",
   credit_card: "bg-chart-5",
   vehicle: "bg-chart-4",
+  document: "bg-primary",
   other: "bg-muted-foreground",
 };
 

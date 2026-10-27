@@ -1,3 +1,6 @@
+import { createHash, createHmac } from "node:crypto";
+import { categoryFor, parseUpiDebit } from "../../core/upi-sms";
+import { extractSmsDebit } from "../../core/ollama";
 import { serviceTokenRoute, tenantRoute } from "../../core/router";
 import { writeAudit } from "../../core/audit";
 import { HttpError } from "../../core/auth";
@@ -33,53 +36,299 @@ function computeVerdict(
 const PRICE_ALERT_ROUTE = process.env.PRICE_ALERT_ROUTE_KEY ?? "automations.digest";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Money reads for one user: validate the id, confirm they're in the token's
+// org, then re-enter the tenant tx as them so personal rows stay private.
+async function asOwner<T>(
+  ctx: { tx: any; orgId: string; role: any },
+  userId: string | null,
+  fn: (tx: any) => Promise<T>,
+): Promise<T> {
+  if (!userId || !UUID_RE.test(userId)) throw new HttpError(400, "userId (uuid) is required");
+  const [member] = await ctx.tx`SELECT 1 FROM users WHERE id = ${userId}::uuid AND org_id = ${ctx.orgId}::uuid`;
+  if (!member) throw new HttpError(400, "userId is not a member of this org");
+  return withTenantTx({ orgId: ctx.orgId, userId, role: ctx.role }, fn);
+}
+// One expense insert for every worker/phone path (Gmail ingest, SMS): runs in
+// the owner's tenant tx so RLS applies, finds-or-creates the account in the
+// same zone, and is idempotent on (source, external_id).
+async function insertExpenseAs(
+  ctx: { orgId: string; role: any },
+  owner: string,
+  zone: "personal" | "professional",
+  e: { accountName?: string | null; amount: bigint; currency?: string | null; category: string; occurredOn: string; note?: string | null; source: string; externalId: string },
+): Promise<{ id: string; amount_cents: bigint }> {
+  return withTenantTx({ orgId: ctx.orgId, userId: owner, role: ctx.role }, async (tx) => {
+    let accountId: string | null = null;
+    if (e.accountName?.trim()) {
+      const [existing] = await tx`
+        SELECT id FROM accounts WHERE org_id = ${ctx.orgId} AND name = ${e.accountName.trim()} AND zone = ${zone}
+      `;
+      if (existing) accountId = existing.id;
+      else {
+        const [created] = await tx`
+          INSERT INTO accounts (org_id, owner_user_id, zone, name, kind)
+          VALUES (${ctx.orgId}, ${owner}, ${zone}, ${e.accountName.trim()}, 'bank')
+          RETURNING id
+        `;
+        accountId = created.id;
+      }
+    }
+    const [r] = await tx`
+      INSERT INTO expenses (org_id, owner_user_id, zone, account_id, amount_cents, currency, category, occurred_on, note, source, external_id)
+      VALUES (${ctx.orgId}, ${owner}, ${zone}, ${accountId}, ${e.amount.toString()}, ${e.currency ?? "INR"}, ${e.category},
+              ${e.occurredOn}, ${e.note ?? null}, ${e.source}, ${e.externalId})
+      ON CONFLICT (org_id, source, external_id) WHERE source IS NOT NULL AND external_id IS NOT NULL
+      DO UPDATE SET
+        account_id = EXCLUDED.account_id, amount_cents = EXCLUDED.amount_cents,
+        currency = EXCLUDED.currency, category = EXCLUDED.category,
+        occurred_on = EXCLUDED.occurred_on, note = EXCLUDED.note
+      RETURNING id, amount_cents
+    `;
+    return r;
+  });
+}
+
+function requiredZone(url: URL): "personal" | "professional" {
+  const zone = url.searchParams.get("zone");
+  if (zone !== "personal" && zone !== "professional") throw new HttpError(400, "zone is required: personal | professional");
+  return zone;
+}
+
 const REMINDER_CATEGORIES = new Set(["bill", "insurance", "loan", "credit_card", "vehicle", "other"]);
 
 export const integrationRoutes = {
   // Bank-alert parsers post here. Idempotent on (source, external_id) — a
   // replay of the same Gmail message updates the same row instead of
   // duplicating it. accountName is resolved-or-created under the current org.
+  // N5 — one day's spending for one user, totalled by category in SQL, with
+  // each category's trailing 30-day daily average for anomaly flags. `zone` is
+  // required: automations must say whether they read personal or business
+  // money. Re-enters the owner's tenant tx so personal rows stay private.
+  "/api/integrations/expenses/daily": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "expenses:read");
+      const url = new URL(req.url);
+      const zone = requiredZone(url);
+      const date = url.searchParams.get("date") ?? "";
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new HttpError(400, "date (YYYY-MM-DD) is required");
+
+      const rows = await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        WITH day AS (
+          SELECT category, SUM(amount_cents)::bigint AS total, count(*)::int AS n
+          FROM expenses
+          WHERE zone = ${zone} AND occurred_on = ${date}::date
+          GROUP BY category
+        ), hist AS (
+          SELECT category, SUM(amount_cents)::float / 30 AS avg_daily, count(DISTINCT occurred_on)::int AS days
+          FROM expenses
+          WHERE zone = ${zone} AND occurred_on >= ${date}::date - 30 AND occurred_on < ${date}::date
+          GROUP BY category
+        )
+        SELECT d.category, d.total::text AS "totalCents", d.n AS count,
+               COALESCE(h.avg_daily, 0)::float AS "avgDailyCents30d",
+               COALESCE(h.days, 0) AS "baselineDays"
+        FROM day d LEFT JOIN hist h USING (category)
+        ORDER BY d.total DESC
+      `);
+      return Response.json({ date, zone, categories: rows });
+    }),
+  },
+
+  // R3 — the owner's birthdays / anniversaries (all of them; the worker
+  // decides which are 7 days out or today, with money-dates.nextDue).
+  "/api/integrations/occasions": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "occasions:read");
+      const url = new URL(req.url);
+      const rows = await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        SELECT person, relationship, kind, month, day, year, notes FROM occasions ORDER BY month, day
+      `);
+      return Response.json(rows);
+    }),
+  },
+
+  // R11 / R7 / R9 — the owner's life trackers for the worker's reports.
+  "/api/integrations/life/habits": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "life:read");
+      const url = new URL(req.url);
+      return Response.json(await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        SELECT h.name,
+               COALESCE(array_agg(to_char(l.logged_on, 'YYYY-MM-DD') ORDER BY l.logged_on)
+                        FILTER (WHERE l.logged_on IS NOT NULL), '{}') AS done
+        FROM habits h
+        LEFT JOIN habit_logs l ON l.habit_id = h.id AND l.logged_on >= CURRENT_DATE - 120
+        WHERE h.active
+        GROUP BY h.id ORDER BY h.created_at
+      `));
+    }),
+  },
+  "/api/integrations/life/groceries": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "life:read");
+      const url = new URL(req.url);
+      return Response.json(await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        SELECT name FROM grocery_items WHERE NOT done ORDER BY created_at
+      `));
+    }),
+  },
+  "/api/integrations/life/vehicles": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "life:read");
+      const url = new URL(req.url);
+      return Response.json(await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        SELECT v.name, v.service_every_km AS "serviceEveryKm", v.service_every_months AS "serviceEveryMonths",
+               COALESCE((
+                 SELECT json_agg(json_build_object(
+                   'kind', l.kind, 'on', to_char(l.logged_on, 'YYYY-MM-DD'), 'odometerKm', l.odometer_km,
+                   'litres', l.litres::float, 'amountCents', l.amount_cents::float, 'fullTank', l.full_tank
+                 ) ORDER BY l.logged_on, l.odometer_km)
+                 FROM vehicle_logs l WHERE l.vehicle_id = v.id AND (l.kind = 'service' OR l.logged_on >= CURRENT_DATE - 120)
+               ), '[]'::json) AS logs
+        FROM vehicles v ORDER BY v.created_at
+      `));
+    }),
+  },
+
+  // N9 / R13 — active recurring bills in one zone, with timing so the worker
+  // can place them on a calendar (money-dates.ts).
+  "/api/integrations/finance/bills": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "expenses:read");
+      const url = new URL(req.url);
+      const zone = requiredZone(url);
+      const rows = await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        SELECT id, name, amount_cents::text AS "amountCents", currency, cadence,
+               due_day AS "dueDay", due_month AS "dueMonth", category
+        FROM recurring_bills
+        WHERE zone = ${zone} AND active = true
+        ORDER BY name
+      `);
+      return Response.json(rows);
+    }),
+  },
+
+  // N9 — the manual balances the owner set on their accounts in one zone.
+  "/api/integrations/finance/balances": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "expenses:read");
+      const url = new URL(req.url);
+      const zone = requiredZone(url);
+      const rows = await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        SELECT name, balance_cents::text AS "balanceCents", balance_updated_at AS "balanceUpdatedAt"
+        FROM accounts
+        WHERE zone = ${zone} AND balance_cents IS NOT NULL
+        ORDER BY name
+      `);
+      return Response.json(rows);
+    }),
+  },
+
+  // R10 — each personal budget with month-to-date spend in its category
+  // (case-insensitive), as of ?date. Personal zone only by design.
+  "/api/integrations/finance/budgets": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "expenses:read");
+      const url = new URL(req.url);
+      const date = url.searchParams.get("date") ?? "";
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new HttpError(400, "date (YYYY-MM-DD) is required");
+      const rows = await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        SELECT b.category, b.monthly_limit_cents::text AS "limitCents",
+               COALESCE(SUM(e.amount_cents), 0)::text AS "spentCents"
+        FROM budgets b
+        LEFT JOIN expenses e
+          ON lower(e.category) = lower(b.category)
+         AND e.zone = 'personal'
+         AND e.occurred_on >= date_trunc('month', ${date}::date)
+         AND e.occurred_on <= ${date}::date
+        GROUP BY b.id
+        ORDER BY b.category
+      `);
+      return Response.json({ date, budgets: rows });
+    }),
+  },
+
+  // R1 — a bank SMS forwarded by the phone (iOS Shortcut / Android
+  // automation) with a service token holding expenses:write. Lands as the
+  // token owner's personal expense. Deterministic parser first, local model
+  // only as a fallback; anything that isn't a clear debit is skipped with 200
+  // so the phone automation never shows an error for a non-expense SMS.
+  "/api/integrations/sms": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "expenses:write");
+      const body = (await req.json().catch(() => ({}))) as { text?: unknown; receivedAt?: unknown };
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (!text || text.length > 1000) throw new HttpError(400, "text (the SMS body, max 1000 chars) is required");
+
+      let parsed = parseUpiDebit(text);
+      let category = parsed ? categoryFor(parsed.merchant) : "other";
+      let via: "parser" | "model" = "parser";
+      if (!parsed) {
+        // Only ask the model about SMS that mention money at all.
+        if (!/(rs\.?|inr|₹)\s*[\d,]|debited/i.test(text)) return Response.json({ skipped: "not a debit" });
+        const m = await extractSmsDebit(text).catch((err) => {
+          log.warn("sms fallback failed", { err: err instanceof Error ? err.message : String(err) });
+          return null;
+        });
+        if (!m) return Response.json({ skipped: "not a debit, or not readable" });
+        parsed = { amountPaise: m.amountPaise, merchant: m.merchant, account: null, ref: text.match(/\b(\d{12})\b/)?.[1] ?? null };
+        category = m.category;
+        via = "model";
+      }
+
+      const received = typeof body.receivedAt === "string" && !Number.isNaN(Date.parse(body.receivedAt)) ? new Date(body.receivedAt) : new Date();
+      const occurredOn = new Intl.DateTimeFormat("en-CA", { timeZone: process.env.SCHEDULE_TIMEZONE ?? "Asia/Kolkata" }).format(received);
+      const externalId = parsed.ref
+        ? `upi:${parsed.ref}`
+        : `sms:${createHash("sha256").update(text).digest("hex").slice(0, 24)}`;
+      const row = await insertExpenseAs(ctx, ctx.userId, "personal", {
+        accountName: parsed.account ? `A/c XX${parsed.account}` : null,
+        amount: BigInt(parsed.amountPaise),
+        category,
+        occurredOn,
+        note: parsed.merchant ? `${parsed.merchant} (SMS)` : "Payment (SMS)",
+        source: "sms",
+        externalId,
+      });
+      await writeAudit(ctx.tx, ctx, {
+        action: "expense:create_via_sms",
+        resourceType: "expense",
+        resourceId: row.id,
+        metadata: { via, externalId, tokenId: ctx.tokenId },
+      });
+      return Response.json(
+        { id: row.id, amountRupees: parsed.amountPaise / 100, merchant: parsed.merchant, category, via },
+        { status: 201 },
+      );
+    }),
+  },
+
   "/api/integrations/expenses": {
     POST: serviceTokenRoute(async (req, ctx) => {
       requireScope(ctx, "expenses:write");
-      const { accountName, amountCents, currency, category, occurredOn, note, source, externalId } = await req.json();
+      const { accountName, amountCents, currency, category, occurredOn, note, source, externalId, userId, zone: z } = await req.json();
       if (amountCents == null || !category || !occurredOn || !source || !externalId) {
         throw new HttpError(400, "amountCents, category, occurredOn, source, externalId are required");
       }
       const amount = typeof amountCents === "string" ? BigInt(amountCents) : BigInt(amountCents);
       if (amount <= 0n) throw new HttpError(400, "amountCents must be positive");
+      // P2: the row belongs to the user whose inbox it came from (default:
+      // the token's owner, for callers that predate userId) and lands in the
+      // zone of that Gmail account (default personal).
+      const owner = typeof userId === "string" && UUID_RE.test(userId) ? userId : ctx.userId;
+      const zone = z ?? "personal";
+      if (zone !== "personal" && zone !== "professional") throw new HttpError(400, "zone must be personal | professional");
+      const [member] = await ctx.tx`SELECT 1 FROM users WHERE id = ${owner}::uuid AND org_id = ${ctx.orgId}::uuid`;
+      if (!member) throw new HttpError(400, "userId is not a member of this org");
 
-      let accountId: string | null = null;
-      if (accountName?.trim()) {
-        const [existing] = await ctx.tx`
-          SELECT id FROM accounts WHERE org_id = ${ctx.orgId} AND name = ${accountName.trim()}
-        `;
-        if (existing) accountId = existing.id;
-        else {
-          const [created] = await ctx.tx`
-            INSERT INTO accounts (org_id, name, kind) VALUES (${ctx.orgId}, ${accountName.trim()}, 'bank')
-            RETURNING id
-          `;
-          accountId = created.id;
-        }
-      }
-
-      const [row] = await ctx.tx`
-        INSERT INTO expenses (org_id, account_id, amount_cents, currency, category, occurred_on, note, source, external_id)
-        VALUES (${ctx.orgId}, ${accountId}, ${amount.toString()}, ${currency ?? "INR"}, ${category},
-                ${occurredOn}, ${note ?? null}, ${source}, ${externalId})
-        ON CONFLICT (org_id, source, external_id) WHERE source IS NOT NULL AND external_id IS NOT NULL
-        DO UPDATE SET
-          account_id = EXCLUDED.account_id, amount_cents = EXCLUDED.amount_cents,
-          currency = EXCLUDED.currency, category = EXCLUDED.category,
-          occurred_on = EXCLUDED.occurred_on, note = EXCLUDED.note
-        RETURNING id, amount_cents
-      `;
+      const row = await insertExpenseAs(ctx, owner, zone, {
+        accountName, amount, currency, category, occurredOn, note, source, externalId,
+      });
       await writeAudit(ctx.tx, ctx, {
         action: "expense:create_via_integration",
         resourceType: "expense",
         resourceId: row.id,
-        metadata: { source, externalId, tokenId: ctx.tokenId },
+        metadata: { source, externalId, tokenId: ctx.tokenId, owner, zone },
       });
       return Response.json({ id: row.id, amountCents: row.amount_cents.toString() }, { status: 201 });
     }),
@@ -162,16 +411,19 @@ export const integrationRoutes = {
   "/api/integrations/notify-update": {
     POST: serviceTokenRoute(async (req, ctx) => {
       requireScope(ctx, "slack:send");
-      const { routeKey, refs, text, blocks } = await req.json();
+      const { routeKey, refs, text, blocks, approvalState } = await req.json();
       if (!routeKey?.trim() || !text?.trim() || !Array.isArray(refs) || refs.length === 0) {
         throw new HttpError(400, "routeKey, refs[], text are required");
+      }
+      if (approvalState != null && !["approved", "rejected", "expired"].includes(approvalState)) {
+        throw new HttpError(400, "approvalState must be approved | rejected | expired");
       }
       for (const r of refs) {
         if (!r || typeof r.channel !== "string" || typeof r.ts !== "string") {
           throw new HttpError(400, "each ref must be {channel, ts}");
         }
       }
-      await updateNotification(ctx.tx, ctx.orgId, routeKey.trim(), refs, { text, blocks });
+      await updateNotification(ctx.tx, ctx.orgId, routeKey.trim(), refs, { text, blocks, approvalState: approvalState ?? undefined });
       return Response.json({ ok: true });
     }),
   },
@@ -194,6 +446,22 @@ export const integrationRoutes = {
   // Metadata mirror of the worker's external_credentials (metadata only, no
   // tokens). Worker upserts on every auth + refresh so the UI can list
   // connected accounts without reaching the worker's HTTP server.
+  // Signed OAuth `state` for the worker's /auth/{google,github}/start. Binds
+  // the consent flow to the signed-in CC user so the worker never trusts an
+  // email or user id typed into a URL. HMAC over WORKER_CALLBACK_TOKEN, the
+  // secret CC and the worker already share; verified in worker crypto.ts.
+  // ponytail: 10-min expiry, no single-use nonce table; add one if state
+  // leakage ever becomes a realistic threat.
+  "/api/integrations/oauth-state": {
+    GET: tenantRoute(async (_req, ctx) => {
+      const secret = process.env.WORKER_CALLBACK_TOKEN;
+      if (!secret) throw new HttpError(500, "WORKER_CALLBACK_TOKEN not set");
+      const body = Buffer.from(JSON.stringify({ u: ctx.userId, o: ctx.orgId, exp: Date.now() + 10 * 60_000 })).toString("base64url");
+      const sig = createHmac("sha256", secret).update(body).digest("base64url");
+      return Response.json({ state: `${body}.${sig}` });
+    }),
+  },
+
   "/api/integrations/external-accounts": {
     GET: tenantRoute(async (_req, ctx) => {
       const rows = await ctx.tx`
@@ -228,7 +496,8 @@ export const integrationRoutes = {
           scopes = EXCLUDED.scopes,
           status = EXCLUDED.status,
           last_refreshed_at = COALESCE(EXCLUDED.last_refreshed_at, external_accounts.last_refreshed_at),
-          metadata = EXCLUDED.metadata,
+          -- merge: token-refresh mirrors send {} and must not wipe ccUserId
+          metadata = external_accounts.metadata || EXCLUDED.metadata,
           updated_at = now()
         RETURNING service, user_id, label, scopes, status, last_refreshed_at, metadata
       `;

@@ -105,12 +105,12 @@ export async function mailReplyWorkflow(input: MailReplyInput): Promise<{
 
   const gotDecision = await wf.condition(() => state !== "pending", "24 hours");
   if (!gotDecision) {
-    await updateApprovalNotification(input.approvalRouteKey, refs, "⌛ Reply approval expired after 24h — not sent.");
+    await updateApprovalNotification(input.approvalRouteKey, refs, "⌛ Reply approval expired after 24h — not sent.", "expired");
     return { status: "expired" };
   }
   if ((state as ApprovalState) === "rejected") {
     await updateApprovalNotification(input.approvalRouteKey, refs,
-      `❌ Discarded${approver ? ` by <@${approver}>` : ""} — reply not sent.`);
+      `❌ Discarded${approver ? ` by <@${approver}>` : ""} — reply not sent.`, "rejected");
     return { status: "rejected" };
   }
 
@@ -125,12 +125,12 @@ export async function mailReplyWorkflow(input: MailReplyInput): Promise<{
       inReplyTo: full.messageIdHeader,
     });
     await updateApprovalNotification(input.approvalRouteKey, refs,
-      `✅ Sent${approver ? ` by <@${approver}>` : ""} — Gmail id ${sentId}.`);
+      `✅ Sent${approver ? ` by <@${approver}>` : ""} — Gmail id ${sentId}.`, "approved");
     return { status: "sent", sentId };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await updateApprovalNotification(input.approvalRouteKey, refs,
-      `⚠️ Send failed after approval: ${msg.slice(0, 160)}`);
+      `⚠️ Send failed after approval: ${msg.slice(0, 160)}`, "approved");
     return { status: "send_failed", reason: msg };
   }
 }

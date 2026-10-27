@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils";
 // Display names for the known services.
 const SERVICE_LABEL: Record<string, string> = {
   keepa: "Keepa",
+  openweather: "OpenWeatherMap",
   openai: "OpenAI",
   anthropic: "Anthropic",
   replicate: "Replicate",

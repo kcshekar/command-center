@@ -5,7 +5,7 @@ import { HttpError } from "../../core/auth";
 import { generateServiceToken } from "../../core/service-token";
 import { textArrayLiteral } from "../../core/pg-array";
 
-const ALLOWED_SCOPES = new Set(["expenses:write", "reminders:write", "reminders:read", "slack:send", "prices:write", "prices:read", "credentials:read", "prompts:read", "pilgrim:read", "ttd:read", "knowledge:read", "knowledge:write", "learning:read", "profile:read", "jobs:read", "jobs:write", "interviews:read", "interviews:write", "events:write"]);
+const ALLOWED_SCOPES = new Set(["expenses:write", "expenses:read", "occasions:read", "life:read", "reminders:write", "reminders:read", "slack:send", "prices:write", "prices:read", "credentials:read", "prompts:read", "pilgrim:read", "ttd:read", "knowledge:read", "knowledge:write", "learning:read", "profile:read", "jobs:read", "jobs:write", "interviews:read", "interviews:write", "events:write"]);
 
 export const serviceTokenRoutes = {
   "/api/service-tokens": {

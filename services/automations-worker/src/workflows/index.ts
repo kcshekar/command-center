@@ -1,5 +1,5 @@
 export { morningBriefWorkflow } from "./morning-brief.js";
-export { inboxTriageWorkflow } from "./inbox-triage.js";
+export { inboxTriageWorkflow, trashApprovalWorkflow } from "./inbox-triage.js";
 export { eveningWrapWorkflow } from "./evening-wrap.js";
 export { priceWatchInitialFetchWorkflow, priceWatchDailyPollWorkflow } from "./price-watch.js";
 export { ttdPrepWorkflow } from "./ttd-prep.js";
@@ -15,3 +15,8 @@ export { interviewRemindersWorkflow } from "./interview-reminders.js";
 export { calendarInterviewSyncWorkflow } from "./calendar-sync.js";
 export { knowledgeEmbedderWorkflow } from "./embedder.js";
 export { githubPrFromKnowledgeItemWorkflow } from "./github-pr.js";
+export { dailySpendReportWorkflow } from "./spend-report.js";
+export { subscriptionsWorkflow, billForecastWorkflow, budgetReportWorkflow, documentExpiryWorkflow } from "./money-reports.js";
+export { learningCheckWorkflow } from "./learning-check.js";
+export { occasionsWorkflow } from "./occasions.js";
+export { habitCheckinWorkflow, groceryListWorkflow, vehicleReportWorkflow } from "./life-reports.js";

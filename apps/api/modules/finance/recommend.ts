@@ -5,8 +5,9 @@ import { requireRole } from "../../core/rbac";
 // upgrade path if this ever needs real portfolio modeling is a separate
 // service, not more rules bolted on here.
 //
+// Business health only (D1): personal-zone spending never enters these numbers.
 // income      = inward ledger entries (project/client payments) in the window
-// expenses    = daily expenses + recurring bills (normalized to the window) +
+// expenses    = business-zone expenses + business recurring bills (normalized) +
 //               outward ledger entries + CA payments + tax records
 // One known gap: a payroll run only shows up here if it created a linked
 // outward ledger entry (Phase 5's optional financeProjectId) — a payroll run
@@ -38,13 +39,13 @@ export const recommendRoutes = {
         `,
         ctx.tx`
           SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM expenses
-          WHERE occurred_on >= (CURRENT_DATE - (${months}::int * INTERVAL '1 month'))
+          WHERE zone = 'professional' AND occurred_on >= (CURRENT_DATE - (${months}::int * INTERVAL '1 month'))
         `,
         ctx.tx`
           SELECT COALESCE(SUM(
             CASE cadence WHEN 'monthly' THEN amount_cents WHEN 'yearly' THEN amount_cents / 12 WHEN 'weekly' THEN amount_cents * 4 END
           ), 0)::bigint AS monthly_equivalent_cents
-          FROM recurring_bills WHERE active = true
+          FROM recurring_bills WHERE active = true AND zone = 'professional'
         `,
         ctx.tx`
           SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM ca_payments
@@ -56,7 +57,7 @@ export const recommendRoutes = {
         `,
         ctx.tx`
           SELECT category, COALESCE(SUM(amount_cents), 0)::bigint AS total FROM expenses
-          WHERE occurred_on >= (CURRENT_DATE - (${months}::int * INTERVAL '1 month'))
+          WHERE zone = 'professional' AND occurred_on >= (CURRENT_DATE - (${months}::int * INTERVAL '1 month'))
           GROUP BY category
         `,
       ]);

@@ -126,17 +126,9 @@ async function handleAction(orgId: string, payload: any): Promise<void> {
   const badge = parsed.decision === "approve" ? "✅ Approved" : "❌ Rejected";
   await sql.begin(async (tx) => {
     await tx`SELECT set_config('app.current_org_id', ${orgId}, true)`;
-    await tx`
-      UPDATE notifications
-      SET approval_state = ${decisionState},
-          approval_decided_at = now(),
-          read_at = COALESCE(read_at, now())
-      WHERE org_id = ${orgId}
-        AND is_approval = true
-        AND approval_workflow_id = ${parsed.workflowId}
-        AND approval_action_id = ${parsed.actionId}
-        AND approval_state IS NULL
-    `;
+    // SECURITY DEFINER (migration 0044): this tx has no app.current_user_id,
+    // and notifications RLS is per recipient, so a plain UPDATE matched 0 rows.
+    await tx`SELECT settle_in_app_approval(${orgId}::uuid, ${parsed.workflowId}, ${parsed.actionId}, ${decisionState})`;
     await updateMessage(tx, orgId, parsed.routeKey, {
       channel: messageRef.channel,
       ts: messageRef.ts,

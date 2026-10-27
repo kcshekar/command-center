@@ -32,15 +32,15 @@ function clientConfig(): { clientId: string; clientSecret: string; redirectUri: 
 }
 
 // Called by callback-server to redirect the user into GitHub's consent flow.
-// state carries the CC-side userId so the callback can tie the GitHub login
-// back to the right CC user.
-export function githubAuthUrl(ccUserId: string, scopes: string[] = ["public_repo", "repo"]): string {
+// `state` is the CC-signed token (verifyOAuthState) the callback re-checks to
+// tie the GitHub login back to the right CC user.
+export function githubAuthUrl(state: string, scopes: string[] = ["public_repo", "repo"]): string {
   const { clientId, redirectUri } = clientConfig();
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
     scope: scopes.join(" "),
-    state: ccUserId,
+    state,
     allow_signup: "false",
   });
   return `${AUTH_URL}?${params.toString()}`;

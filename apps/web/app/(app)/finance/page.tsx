@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
-import { financeApi, formatCents, formatDate, type RecurringBill, type Expense, type ExpenseSummaryRow, type FinanceProject, type Employee, type PayrollRun, type CaPayment, type TaxRecord, type RecommendationsResponse } from "@/lib/finance-api";
+import { financeApi, formatCents, formatDate, type Zone, type Account, type Budget, type RecurringBill, type Expense, type ExpenseSummaryRow, type FinanceProject, type Employee, type PayrollRun, type CaPayment, type TaxRecord, type RecommendationsResponse } from "@/lib/finance-api";
 import { remindersApi } from "@/lib/reminders-api";
 import { initials, avatarColorClass } from "@/lib/avatar";
 import { AnimatedNumber } from "@/components/animated-number";
@@ -20,6 +20,200 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { toast } from "sonner";
 import { ArrowLeft, ArrowUpRight, Bell, Pause, Play, Plus, TrendingDown, TrendingUp, AlertTriangle, Pencil, Trash2 } from "lucide-react";
 import { apiErrorMessage } from "@/lib/api";
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// N9: the balance the Sunday bill forecast compares upcoming bills against.
+// Manual by design (no bank access) — the date shows how stale it is.
+function AccountsTab() {
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      const rows = await financeApi.listAccounts("personal");
+      setAccounts(rows);
+      setDrafts(Object.fromEntries(rows.map((a) => [a.id, a.balance_cents == null ? "" : String(Number(a.balance_cents) / 100)])));
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Could not load accounts"));
+      setAccounts([]);
+    }
+  }
+  useEffect(() => { void refresh(); }, []);
+
+  async function save(a: Account) {
+    const raw = resolveAmountInput(drafts[a.id] ?? "").trim();
+    const value = raw === "" ? null : Math.round(parseFloat(raw) * 100);
+    if (value !== null && !Number.isFinite(value)) { toast.error("Enter an amount, or leave it empty to clear"); return; }
+    setSaving(a.id);
+    try {
+      await financeApi.setAccountBalance(a.id, value);
+      toast.success(value === null ? `Cleared ${a.name}` : `Saved ${a.name}`);
+      await refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Could not save balance"));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  if (accounts === null) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  if (accounts.length === 0) {
+    return <p className="text-sm text-muted-foreground">No personal accounts yet. They appear when Mail dispatcher files a bank alert, or when you add an expense against one.</p>;
+  }
+  const total = accounts.reduce((t, a) => t + (a.balance_cents == null ? 0 : Number(a.balance_cents)), 0);
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-muted-foreground">
+        Balances you set here are what the Sunday <Link href="/automations/n9.bills" className="font-medium text-primary">Bill forecast</Link> checks your upcoming bills against. Total set: <span className="font-mono">{formatCents(total, "INR")}</span>.
+      </p>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Account</TableHead>
+            <TableHead>Balance (₹)</TableHead>
+            <TableHead>Updated</TableHead>
+            <TableHead className="w-0" />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {accounts.map((a) => {
+            const saved = a.balance_cents == null ? "" : String(Number(a.balance_cents) / 100);
+            const dirty = (drafts[a.id] ?? "") !== saved;
+            return (
+              <TableRow key={a.id}>
+                <TableCell className="[overflow-wrap:anywhere]">{a.name}</TableCell>
+                <TableCell>
+                  <Input
+                    aria-label={`Balance for ${a.name}`}
+                    inputMode="decimal"
+                    className="h-8 w-36 font-mono"
+                    value={drafts[a.id] ?? ""}
+                    placeholder="not set"
+                    onChange={(e) => setDrafts((d) => ({ ...d, [a.id]: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === "Enter") void save(a); }}
+                  />
+                </TableCell>
+                <TableCell className="text-muted-foreground">{a.balance_updated_at ? formatDate(a.balance_updated_at) : "—"}</TableCell>
+                <TableCell>
+                  <Button size="sm" variant={dirty ? "default" : "ghost"} disabled={!dirty || saving === a.id} onClick={() => void save(a)}>
+                    {saving === a.id ? "Saving…" : "Save"}
+                  </Button>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+// R10: monthly limit per spending category (personal). The Friday Budget
+// check reports month-to-date spend against the limit prorated to the day.
+function BudgetsTab() {
+  const [budgets, setBudgets] = useState<Budget[] | null>(null);
+  const [categories, setCategories] = useState<string[]>([]);
+  const [category, setCategory] = useState("");
+  const [limit, setLimit] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function refresh() {
+    try {
+      const [b, summary] = await Promise.all([financeApi.listBudgets(), financeApi.expenseSummary(6, "personal")]);
+      setBudgets(b);
+      setCategories([...new Set(summary.map((r) => r.category.toLowerCase()))].sort());
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Could not load budgets"));
+      setBudgets([]);
+    }
+  }
+  useEffect(() => { void refresh(); }, []);
+
+  async function save(cat: string, rupees: string) {
+    const cents = Math.round(parseFloat(resolveAmountInput(rupees)) * 100);
+    if (!cat.trim() || !cents || cents <= 0) { toast.error("Pick a category and a monthly amount"); return; }
+    setSaving(true);
+    try {
+      await financeApi.setBudget(cat.trim(), cents);
+      toast.success(`Budget set for ${cat.trim().toLowerCase()}`);
+      setCategory(""); setLimit("");
+      await refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Could not save budget"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(b: Budget) {
+    try {
+      await financeApi.deleteBudget(b.id);
+      toast.success(`Removed ${b.category}`);
+      await refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Could not remove budget"));
+    }
+  }
+
+  const now = new Date();
+  const monthDays = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const pace = now.getDate() / monthDays;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        Set a monthly limit per category. Every Friday the <Link href="/automations/r10.budget" className="font-medium text-primary">Budget check</Link> compares this month&apos;s spending with the limit for the days gone so far ({now.getDate()} of {monthDays}).
+      </p>
+      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); void save(category, limit); }}>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="budget-category">Category</Label>
+          <Input id="budget-category" list="budget-categories" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="food" className="h-9 w-44" />
+          <datalist id="budget-categories">{categories.map((c) => <option key={c} value={c} />)}</datalist>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="budget-limit">Monthly limit (₹)</Label>
+          <Input id="budget-limit" inputMode="decimal" value={limit} onChange={(e) => setLimit(e.target.value)} placeholder="8000" className="h-9 w-36 font-mono" />
+        </div>
+        <Button type="submit" size="sm" disabled={saving}>{saving ? "Saving…" : "Set budget"}</Button>
+      </form>
+      {budgets === null ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : budgets.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No budgets yet. Start with the category you spend most on.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {budgets.map((b) => {
+            const limitCents = Number(b.monthly_limit_cents);
+            const spent = Number(b.spent_cents);
+            const used = Math.min(spent / limitCents, 1);
+            const ahead = spent > limitCents * pace;
+            return (
+              <div key={b.id} className="flex flex-col gap-1.5 rounded-lg border bg-card p-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+                  <span className="font-medium capitalize">{b.category}</span>
+                  <span className="font-mono text-xs tabular-nums">
+                    {formatCents(spent, "INR")} of {formatCents(limitCents, "INR")}
+                    {spent > limitCents ? <span className="ml-2 text-destructive">over budget</span> : ahead ? <span className="ml-2 text-warning">ahead of pace</span> : null}
+                  </span>
+                </div>
+                <div className="relative h-2 overflow-hidden rounded-full bg-muted" role="img" aria-label={`${Math.round(used * 100)}% of the ${b.category} budget used`}>
+                  <div className={`h-full rounded-full ${spent > limitCents ? "bg-destructive" : ahead ? "bg-warning" : "bg-primary"}`} style={{ width: `${used * 100}%` }} />
+                  <div className="absolute inset-y-0 w-px bg-foreground/50" style={{ left: `${pace * 100}%` }} title="Where you'd be at an even pace" />
+                </div>
+                <div className="flex justify-end gap-1">
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => { setCategory(b.category); setLimit(String(limitCents / 100)); }}>Edit</Button>
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => void remove(b)}>Remove</Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Manual link from a finance record to Reminders (payroll runs, CA
 // payments) — opens pre-filled, resourceType/resourceId tie it back to
@@ -118,64 +312,145 @@ const SEVERITY_VARIANT: Record<string, "default" | "outline" | "destructive"> = 
   critical: "destructive",
 };
 
+// U7: one switch between Personal (private to you) and Business (shared with
+// the org: projects, payroll, CA, tax — D1). Members get Personal plus their
+// own payroll; owners/admins can flip to Business. #business deep-links.
 export default function FinancePage() {
   const { user } = useAuth();
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
+  const [zone, setZone] = useState<Zone>("personal");
 
-  if (!isOwnerOrAdmin) return <MyPayrollView />;
+  useEffect(() => {
+    const fromHash = () => setZone(isOwnerOrAdmin && window.location.hash === "#business" ? "professional" : "personal");
+    fromHash();
+    window.addEventListener("hashchange", fromHash); // same-page #business links
+    return () => window.removeEventListener("hashchange", fromHash);
+  }, [isOwnerOrAdmin]);
+  function pick(z: Zone) {
+    setZone(z);
+    history.replaceState(null, "", z === "professional" ? "#business" : window.location.pathname);
+  }
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-heading font-semibold tracking-tight">Finance</h1>
-        <p className="text-sm text-muted-foreground">Bills, expenses, project ledgers, payroll, and tax.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-heading font-semibold tracking-tight">Finance</h1>
+          <p className="text-sm text-muted-foreground">
+            {zone === "personal"
+              ? "Your own spending and bills. Only you can see these."
+              : "Project income, business expenses, payroll and tax. Shared with your org's owners and admins."}
+          </p>
+        </div>
+        {isOwnerOrAdmin && (
+          <div className="inline-flex rounded-lg border bg-card p-0.5" role="group" aria-label="Personal or business money">
+            {(["personal", "professional"] as const).map((z) => (
+              <button
+                key={z}
+                aria-pressed={zone === z}
+                onClick={() => pick(z)}
+                className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${zone === z ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                {z === "personal" ? "Personal" : "Business"}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-      <Tabs defaultValue="overview">
-        <TabsList className="w-full">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="expenses">Bills &amp; Expenses</TabsTrigger>
-          <TabsTrigger value="projects">Projects</TabsTrigger>
-          <TabsTrigger value="payroll">Payroll</TabsTrigger>
-          <TabsTrigger value="tax">Tax &amp; CA</TabsTrigger>
-        </TabsList>
-        <TabsContent value="overview" className="mt-2 border-t pt-4">
-          <OverviewTab />
-        </TabsContent>
-        <TabsContent value="expenses" className="mt-2 border-t pt-4">
-          <BillsAndExpensesTab />
-        </TabsContent>
-        <TabsContent value="projects" className="mt-2 border-t pt-4">
-          <ProjectsTab />
-        </TabsContent>
-        <TabsContent value="payroll" className="mt-2 border-t pt-4">
-          <PayrollTab />
-        </TabsContent>
-        <TabsContent value="tax" className="mt-2 border-t pt-4">
-          <TaxTab />
-        </TabsContent>
-      </Tabs>
+
+      {zone === "personal" ? (
+        <Tabs key="personal" defaultValue="overview">
+          <TabsList className="w-full">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="expenses">Spending &amp; bills</TabsTrigger>
+            <TabsTrigger value="budgets">Budgets</TabsTrigger>
+            <TabsTrigger value="accounts">Accounts</TabsTrigger>
+            {!isOwnerOrAdmin && <TabsTrigger value="payroll">My payroll</TabsTrigger>}
+          </TabsList>
+          <TabsContent value="overview" className="mt-2 border-t pt-4">
+            <OverviewTab zone="personal" />
+          </TabsContent>
+          <TabsContent value="expenses" className="mt-2 border-t pt-4">
+            <BillsAndExpensesTab zone="personal" canUseBusiness={isOwnerOrAdmin} />
+          </TabsContent>
+          <TabsContent value="budgets" className="mt-2 border-t pt-4">
+            <BudgetsTab />
+          </TabsContent>
+          <TabsContent value="accounts" className="mt-2 border-t pt-4">
+            <AccountsTab />
+          </TabsContent>
+          {!isOwnerOrAdmin && (
+            <TabsContent value="payroll" className="mt-2 border-t pt-4">
+              <MyPayrollView embedded />
+            </TabsContent>
+          )}
+        </Tabs>
+      ) : (
+        <Tabs key="business" defaultValue="overview">
+          <TabsList className="w-full">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="expenses">Expenses &amp; bills</TabsTrigger>
+            <TabsTrigger value="projects">Projects</TabsTrigger>
+            <TabsTrigger value="payroll">Payroll</TabsTrigger>
+            <TabsTrigger value="tax">Tax &amp; CA</TabsTrigger>
+          </TabsList>
+          <TabsContent value="overview" className="mt-2 border-t pt-4">
+            <OverviewTab zone="professional" />
+          </TabsContent>
+          <TabsContent value="expenses" className="mt-2 border-t pt-4">
+            <BillsAndExpensesTab zone="professional" canUseBusiness />
+          </TabsContent>
+          <TabsContent value="projects" className="mt-2 border-t pt-4">
+            <ProjectsTab />
+          </TabsContent>
+          <TabsContent value="payroll" className="mt-2 border-t pt-4">
+            <PayrollTab />
+          </TabsContent>
+          <TabsContent value="tax" className="mt-2 border-t pt-4">
+            <TaxTab />
+          </TabsContent>
+        </Tabs>
+      )}
     </div>
   );
 }
 
-function OverviewTab() {
+function monthTotal(rows: ExpenseSummaryRow[], offset: number): number {
+  const d = new Date();
+  const m = new Date(d.getFullYear(), d.getMonth() - offset, 1);
+  const key = `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, "0")}`;
+  return rows.filter((r) => r.month === key).reduce((t, r) => t + Number(r.total_cents), 0);
+}
+
+function OverviewTab({ zone }: { zone: Zone }) {
   const [summary, setSummary] = useState<ExpenseSummaryRow[]>([]);
   const [recs, setRecs] = useState<RecommendationsResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([financeApi.expenseSummary(6), financeApi.recommendations(3)])
+    // Income, savings rate and recommendations are business numbers (project
+    // inward vs business spend), so Personal shows only its own spending.
+    Promise.all([
+      financeApi.expenseSummary(6, zone),
+      zone === "professional" ? financeApi.recommendations(3) : Promise.resolve(null),
+    ])
       .then(([s, r]) => {
         setSummary(s);
         setRecs(r);
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [zone]);
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
   return (
     <div className="flex flex-col gap-6">
+      {zone === "personal" && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <KpiCard label="This month" value={monthTotal(summary, 0)} />
+          <KpiCard label="Last month" value={monthTotal(summary, 1)} />
+        </div>
+      )}
       {recs && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <KpiCard label="Income (3mo)" value={recs.incomeCents} />
@@ -190,7 +465,7 @@ function OverviewTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Expenses, last 6 months</CardTitle>
+          <CardTitle className="text-base">{zone === "personal" ? "Your spending" : "Business expenses"}, last 6 months</CardTitle>
         </CardHeader>
         <CardContent>
           <ExpenseChart rows={summary} />
@@ -274,7 +549,7 @@ function nextBillDueDate(bill: RecurringBill): string {
   return d.toISOString().slice(0, 10);
 }
 
-function BillsAndExpensesTab() {
+function BillsAndExpensesTab({ zone, canUseBusiness }: { zone: Zone; canUseBusiness: boolean }) {
   const [bills, setBills] = useState<RecurringBill[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
@@ -287,6 +562,7 @@ function BillsAndExpensesTab() {
   const [category, setCategory] = useState("");
   const [cadence, setCadence] = useState("monthly");
   const [dueDay, setDueDay] = useState("");
+  const [dueMonth, setDueMonth] = useState(""); // yearly bills only (R13 renewals)
   const [occurredOn, setOccurredOn] = useState(new Date().toISOString().slice(0, 10));
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
@@ -296,7 +572,7 @@ function BillsAndExpensesTab() {
   async function refresh() {
     setLoading(true);
     try {
-      const [b, e] = await Promise.all([financeApi.listBills(), financeApi.listExpenses()]);
+      const [b, e] = await Promise.all([financeApi.listBills(zone), financeApi.listExpenses(zone)]);
       setBills(b);
       setExpenses(e);
     } finally {
@@ -306,7 +582,21 @@ function BillsAndExpensesTab() {
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [zone]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // D2: an expense can move between Personal and Business; only the person
+  // who recorded it may move it, and Business needs owner/admin.
+  const otherZone: Zone = zone === "personal" ? "professional" : "personal";
+  const canMove = (e: Expense) => e.mine && canUseBusiness;
+  async function moveExpense(e: Expense) {
+    try {
+      await financeApi.moveExpense(e.id, otherZone);
+      toast.success(`Moved to ${otherZone === "professional" ? "Business" : "Personal"}`);
+      await refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Could not move this expense"));
+    }
+  }
 
   function openCreate() {
     setEditing(null);
@@ -316,6 +606,7 @@ function BillsAndExpensesTab() {
     setCategory("");
     setCadence("monthly");
     setDueDay("");
+    setDueMonth("");
     setOccurredOn(new Date().toISOString().slice(0, 10));
     setNote("");
     setOpen(true);
@@ -329,6 +620,7 @@ function BillsAndExpensesTab() {
     setCategory(b.category);
     setCadence(b.cadence);
     setDueDay(b.due_day ? String(b.due_day) : "");
+    setDueMonth(b.due_month ? String(b.due_month) : "");
     setOpen(true);
   }
 
@@ -349,7 +641,12 @@ function BillsAndExpensesTab() {
     try {
       if (isRecurring) {
         if (!name.trim()) return;
-        const params = { name: name.trim(), amountCents: cents, cadence, category: category.trim(), dueDay: dueDay ? Number(dueDay) : undefined };
+        const params = {
+          name: name.trim(), amountCents: cents, cadence, category: category.trim(),
+          dueDay: dueDay ? Number(dueDay) : undefined,
+          dueMonth: cadence === "yearly" && dueMonth ? Number(dueMonth) : undefined,
+          zone,
+        };
         if (editing?.type === "bill") {
           await financeApi.updateBill(editing.id, params);
           toast.success("Bill updated");
@@ -359,7 +656,7 @@ function BillsAndExpensesTab() {
         }
       } else {
         if (!occurredOn) return;
-        const params = { amountCents: cents, category: category.trim(), occurredOn, note: note.trim() || undefined };
+        const params = { amountCents: cents, category: category.trim(), occurredOn, note: note.trim() || undefined, zone };
         if (editing?.type === "expense") {
           await financeApi.updateExpense(editing.id, params);
           toast.success("Expense updated");
@@ -422,7 +719,7 @@ function BillsAndExpensesTab() {
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>{editing ? `Edit ${editing.type}` : "Add bill or expense"}</DialogTitle>
+              <DialogTitle>{editing ? `Edit ${editing.type}` : `Add ${zone === "personal" ? "personal" : "business"} bill or expense`}</DialogTitle>
             </DialogHeader>
             <div className="flex flex-col gap-3">
               {!editing && (
@@ -463,10 +760,22 @@ function BillsAndExpensesTab() {
                       <option value="weekly">Weekly</option>
                     </select>
                   </div>
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="be-due">Due day (optional)</Label>
-                    <Input id="be-due" type="number" value={dueDay} onChange={(e) => setDueDay(e.target.value)} placeholder="5" />
+                  <div className="flex gap-3">
+                    {cadence === "yearly" && (
+                      <div className="flex flex-1 flex-col gap-2">
+                        <Label htmlFor="be-month">Renews in</Label>
+                        <select id="be-month" value={dueMonth} onChange={(e) => setDueMonth(e.target.value)} className="h-9 rounded-md border bg-transparent px-3 text-sm">
+                          <option value="">Month…</option>
+                          {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    <div className="flex flex-1 flex-col gap-2">
+                      <Label htmlFor="be-due">{cadence === "weekly" ? "Weekday (1 = Mon … 7 = Sun)" : "Due day of month"}</Label>
+                      <Input id="be-due" type="number" min={1} max={cadence === "weekly" ? 7 : 31} value={dueDay} onChange={(e) => setDueDay(e.target.value)} placeholder={cadence === "weekly" ? "1" : "5"} />
+                    </div>
                   </div>
+                  <p className="text-xs text-muted-foreground">Category &quot;subscription&quot; gets renewal heads-ups from the Subscriptions automation.</p>
                 </>
               ) : (
                 <>
@@ -493,7 +802,11 @@ function BillsAndExpensesTab() {
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No bills or expenses yet.</p>
+        <p className="text-sm text-muted-foreground">
+          {zone === "personal"
+            ? "No personal bills or expenses yet. Add one, or turn on Mail dispatcher to file bank alerts automatically."
+            : "No business expenses yet. Move one here from Personal, or add it with Add."}
+        </p>
       ) : (
         <Table>
           <TableHeader>
@@ -514,7 +827,10 @@ function BillsAndExpensesTab() {
               const isDeleting = confirmDelete?.type === row.type && confirmDelete.id === row.data.id;
               return (
                 <TableRow key={`${row.type}-${row.data.id}`}>
-                  <TableCell>{bill ? bill.name : expense!.note || expense!.category}</TableCell>
+                  <TableCell>
+                    {bill ? bill.name : expense!.note || expense!.category}
+                    {expense?.source === "gmail" && <span className="ml-1.5 text-[10px] text-muted-foreground">from email</span>}
+                  </TableCell>
                   <TableCell>{row.data.category}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {bill ? (
@@ -522,7 +838,9 @@ function BillsAndExpensesTab() {
                         <Badge variant="outline" className="text-[10px] font-normal capitalize">
                           {bill.cadence}
                         </Badge>
-                        {bill.due_day ? `due ${bill.due_day}` : ""}
+                        {bill.cadence === "yearly" && bill.due_month && bill.due_day
+                          ? `renews ${bill.due_day} ${MONTHS[bill.due_month - 1]}`
+                          : bill.due_day ? `due ${bill.due_day}` : ""}
                         {!bill.active && (
                           <Badge variant="secondary" className="text-[10px] font-normal">
                             Paused
@@ -565,6 +883,11 @@ function BillsAndExpensesTab() {
                             defaultRecurrence={bill ? bill.cadence : ""}
                             onCreated={refresh}
                           />
+                        )}
+                        {expense && canMove(expense) && (
+                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => moveExpense(expense)}>
+                            Move to {otherZone === "professional" ? "Business" : "Personal"}
+                          </Button>
                         )}
                         {bill && (
                           <Button variant="ghost" size="icon" className="size-7" onClick={() => toggleActive(bill)} aria-label={bill.active ? "Pause" : "Resume"}>
@@ -1509,7 +1832,7 @@ function TaxTab() {
   );
 }
 
-function MyPayrollView() {
+function MyPayrollView({ embedded = false }: { embedded?: boolean }) {
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -1522,10 +1845,12 @@ function MyPayrollView() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-heading font-semibold tracking-tight">My Payroll</h1>
-        <p className="text-sm text-muted-foreground">Your own payment history.</p>
-      </div>
+      {!embedded && (
+        <div>
+          <h1 className="text-xl font-heading font-semibold tracking-tight">My Payroll</h1>
+          <p className="text-sm text-muted-foreground">Your own payment history.</p>
+        </div>
+      )}
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : runs.length === 0 ? (

@@ -14,6 +14,22 @@ import { toast } from "sonner";
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? "http://localhost:3005";
 
+// The worker only accepts a consent flow carrying a CC-signed `state` for the
+// signed-in user. Open the popup synchronously (popup blockers drop a
+// window.open that follows an await), then point it at the worker once the
+// state arrives.
+async function openOAuthPopup(path: string, name: string, extra: Record<string, string> = {}) {
+  const popup = window.open("about:blank", name, "width=520,height=640,noopener=no");
+  try {
+    const { state } = await apiFetch<{ state: string }>("/integrations/oauth-state");
+    const q = new URLSearchParams({ ...extra, state });
+    if (popup) popup.location.href = `${WORKER_URL}${path}?${q.toString()}`;
+  } catch (err) {
+    popup?.close();
+    toast.error(apiErrorMessage(err, "Could not start sign-in"));
+  }
+}
+
 interface ExternalAccount {
   service: string;
   user_id: string;
@@ -40,9 +56,6 @@ export function ConnectedAccountsCompact() {
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const target = email.trim()
-    ? `${WORKER_URL}/auth/google/start?email=${encodeURIComponent(email.trim())}`
-    : null;
 
   async function refresh() {
     setLoading(true);
@@ -81,11 +94,7 @@ export function ConnectedAccountsCompact() {
 
   function connectGithub() {
     if (!user) return;
-    window.open(
-      `${WORKER_URL}/auth/github/start?ccUserId=${encodeURIComponent(user.userId)}`,
-      "cc-github-oauth",
-      "width=520,height=640,noopener=no"
-    );
+    void openOAuthPopup("/auth/github/start", "cc-github-oauth");
   }
 
   const grouped = accounts.reduce<Record<string, ExternalAccount[]>>((acc, a) => {
@@ -204,12 +213,13 @@ export function ConnectedAccountsCompact() {
             <Button
               size="sm"
               className="h-8 w-fit gap-1.5 text-xs"
-              disabled={!target}
+              disabled={!email.trim()}
               onClick={() => {
-                if (!target) return;
-                // Open as a popup so the callback's window.close() + opener.postMessage
+                // Popup so the callback's window.close() + opener.postMessage
                 // round-trip refreshes this panel without the user juggling tabs.
-                window.open(target, "cc-google-oauth", "width=520,height=640,noopener=no");
+                // The email is only Google's login_hint; the worker stores
+                // tokens under the address Google verifies.
+                void openOAuthPopup("/auth/google/start", "cc-google-oauth", { email: email.trim() });
               }}
             >
               Sign in with Google

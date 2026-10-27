@@ -20,4 +20,5 @@ export const remindersApi = {
   notifyDue: () => apiFetch<{ notified: number }>("/reminders/notify-due", { method: "POST" }),
 };
 
-export const REMINDER_CATEGORIES = ["bill", "insurance", "loan", "credit_card", "vehicle", "other"] as const;
+// "document" (R2): passport, licence, PUC… — R2 alerts on document/insurance/vehicle.
+export const REMINDER_CATEGORIES = ["bill", "insurance", "loan", "credit_card", "vehicle", "document", "other"] as const;

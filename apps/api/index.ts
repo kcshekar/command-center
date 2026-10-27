@@ -27,6 +27,8 @@ import { promptRoutes } from "./modules/prompts/routes";
 import { pilgrimIdentityRoutes } from "./modules/pilgrim-identities/routes";
 import { ttdWindowRoutes } from "./modules/ttd-windows/routes";
 import { learningGoalRoutes } from "./modules/learning-goals/routes";
+import { occasionRoutes } from "./modules/occasions/routes";
+import { lifeRoutes } from "./modules/life/routes";
 import { userProfileRoutes } from "./modules/user-profile/routes";
 import { jobLeadRoutes } from "./modules/job-leads/routes";
 import { interviewRoutes } from "./modules/interviews/routes";
@@ -254,6 +256,8 @@ Bun.serve({
     ...pilgrimIdentityRoutes,
     ...ttdWindowRoutes,
     ...learningGoalRoutes,
+    ...occasionRoutes,
+    ...lifeRoutes,
     ...userProfileRoutes,
     ...jobLeadRoutes,
     ...interviewRoutes,

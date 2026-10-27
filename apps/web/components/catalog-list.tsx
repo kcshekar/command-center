@@ -6,6 +6,7 @@ import {
   Calendar,
   ChevronRight,
   Loader2,
+  Mail,
   Power,
   PowerOff,
   RefreshCw,
@@ -20,26 +21,6 @@ import { cn } from "@/lib/utils";
 
 // Converts cadence_default back to a human string. Mirrors the dashboard's
 // formatCadence shape, but works on raw strings from the catalog seed.
-function humanCadence(c: string | null): string {
-  if (!c) return "—";
-  if (c === "event") return "On event";
-  if (c === "manual") return "Manual";
-  if (c.startsWith("cron:")) {
-    const expr = c.slice(5).trim();
-    // Common patterns from the seed; fall back to raw cron.
-    if (expr === "0 9 * * 1,4") return "Mon & Thu 09:00";
-    if (expr === "0 9,18 * * *") return "Daily 09:00 & 18:00";
-    if (expr === "*/15 * * * *") return "Every 15m";
-    if (expr === "0 7 * * *") return "Daily 07:00";
-    if (expr === "0 10 1 * *") return "1st of month 10:00";
-    if (expr === "0 8 * * 1") return "Mon 08:00";
-    if (expr === "0 */6 * * *") return "Every 6h";
-    if (expr === "0 11 1 * *") return "1st of month 11:00";
-    return expr;
-  }
-  return c;
-}
-
 export function CatalogList() {
   const [rows, setRows] = useState<CatalogRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -74,8 +55,14 @@ export function CatalogList() {
       prev ? prev.map((r) => (r.id === id ? { ...r, enabled: next } : r)) : prev
     );
     try {
-      await automationsApi.setGrantEnabled(id, next);
-      toast.success(next ? `Enabled ${id}` : `Disabled ${id}`);
+      const res = await automationsApi.setGrantEnabled(id, next);
+      const n = res.scheduleIds.length;
+      toast.success(
+        next
+          ? `Enabled ${id}${n ? ` · ${n} schedule${n === 1 ? "" : "s"} running` : ""}`
+          : `Disabled ${id}${n ? ` · schedule${n === 1 ? "" : "s"} paused` : ""}`
+      );
+      void refresh(true); // pick up auto-pinned accounts
     } catch (err) {
       setRows(before);
       toast.error(apiErrorMessage(err, `Failed to ${next ? "enable" : "disable"} ${id}`));
@@ -154,7 +141,7 @@ export function CatalogList() {
                 <p className="text-xs text-muted-foreground">{r.description}</p>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
                   <span className="inline-flex items-center gap-1">
-                    <Calendar className="size-3" /> {humanCadence(r.cadenceDefault)}
+                    <Calendar className="size-3" /> {r.cadence}
                   </span>
                   {r.chainsTo.length > 0 && (
                     <span className="inline-flex items-center gap-1">
@@ -168,6 +155,14 @@ export function CatalogList() {
                           </code>
                         </span>
                       ))}
+                    </span>
+                  )}
+                  {r.perAccount && (
+                    <span className="inline-flex min-w-0 items-center gap-1 [overflow-wrap:anywhere]">
+                      <Mail className="size-3 shrink-0" />
+                      {r.config.accounts?.length
+                        ? r.config.accounts.map((a) => a.email).join(", ")
+                        : "no Google account pinned yet (all connected ones are pinned on enable)"}
                     </span>
                   )}
                   {r.requiredScopes.length > 0 && (

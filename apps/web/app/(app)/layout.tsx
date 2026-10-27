@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { useAuth } from "@/lib/auth-context";
-import { NAV_ITEMS } from "@/lib/nav-items";
+import { AREA_LABEL, groupNav, useNavItems, type NavItem } from "@/lib/nav-items";
 import { CommandPalette } from "@/components/command-palette";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { NotificationBell } from "@/components/notification-bell";
@@ -20,40 +20,38 @@ import { Command, LogOut, Menu, Monitor, ShieldCheck, ScrollText } from "lucide-
 import { cn } from "@/lib/utils";
 import { Breadcrumb } from "@/components/breadcrumb";
 
-// Pages that live below /automations get an auto-inserted back-crumb so the
-// user can jump back without a browser back-click.
-const AUTOMATION_SUBPATHS: Record<string, string> = {
-  "/jobs":            "Jobs",
-  "/interviews":      "Interviews",
-  "/price-watcher":   "Price Watcher",
-  "/learning":        "Learning Digest",
-  "/pilgrim":         "TTD / Pilgrim Pack",
-  "/profile-drafts":  "Profile Drafts",
-  "/agent-automations": "Control room",
-};
-
-function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
+function NavLinks({ items, pathname, onNavigate }: { items: NavItem[]; pathname: string; onNavigate?: () => void }) {
   return (
-    <nav className="flex-1 px-2 space-y-1">
-      {NAV_ITEMS.map((item) => {
-        const active = pathname.startsWith(item.href);
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={onNavigate}
-            className={cn(
-              "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
-              active
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            )}
-          >
-            <item.icon className="size-4" />
-            {item.label}
-          </Link>
-        );
-      })}
+    <nav className="flex-1 overflow-y-auto px-2 pb-2">
+      {groupNav(items).map((g) => (
+        <div key={g.area ?? "top"} className="space-y-1 pb-2">
+          {g.area && (
+            <div className="px-2 pt-3 pb-1 font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+              {AREA_LABEL[g.area]}
+            </div>
+          )}
+          {g.items.map((item) => {
+            const active = pathname.startsWith(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onNavigate}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                  active
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                )}
+              >
+                <item.icon className="size-4" />
+                {item.label}
+              </Link>
+            );
+          })}
+        </div>
+      ))}
     </nav>
   );
 }
@@ -63,6 +61,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const navItems = useNavItems();
+  const current = navItems.find((i) => pathname.startsWith(i.href));
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -83,7 +83,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="flex flex-1 min-h-0">
       <aside className="hidden md:flex w-56 shrink-0 border-r border-sidebar-border bg-sidebar flex-col">
         <div className="px-4 py-4 text-sm font-heading font-semibold tracking-tight text-sidebar-foreground">Command Center</div>
-        <NavLinks pathname={pathname} />
+        <NavLinks items={navItems} pathname={pathname} />
         <div className="px-2 py-3 text-xs text-muted-foreground">Role: {user.role}</div>
       </aside>
 
@@ -92,7 +92,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/40 md:hidden data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
           <DialogPrimitive.Popup className="fixed inset-y-0 left-0 z-50 flex w-64 max-w-[80%] flex-col border-r border-sidebar-border bg-sidebar outline-none md:hidden data-open:animate-in data-open:slide-in-from-left data-closed:animate-out data-closed:slide-out-to-left">
             <div className="px-4 py-4 text-sm font-heading font-semibold tracking-tight text-sidebar-foreground">Command Center</div>
-            <NavLinks pathname={pathname} onNavigate={() => setMobileNavOpen(false)} />
+            <NavLinks items={navItems} pathname={pathname} onNavigate={() => setMobileNavOpen(false)} />
             <div className="px-2 py-3 text-xs text-muted-foreground">Role: {user.role}</div>
           </DialogPrimitive.Popup>
         </DialogPrimitive.Portal>
@@ -144,11 +144,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <main className="flex-1 min-h-0 overflow-auto p-4 sm:p-6">
-          {AUTOMATION_SUBPATHS[pathname] && (
+          {(current?.fromCatalog || current?.href === "/agent-automations") && (
             <div className="mb-3">
               <Breadcrumb items={[
                 { label: "Automations", href: "/automations" },
-                { label: AUTOMATION_SUBPATHS[pathname] },
+                { label: current.label },
               ]} />
             </div>
           )}

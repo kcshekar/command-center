@@ -4,10 +4,11 @@ import { google } from "googleapis";
 import { oauthClient, saveTokens } from "./google-oauth.js";
 import { pool } from "./db.js";
 import { evictIdentityCache, evictTokenCache } from "./cc-token-store.js";
+import { verifyOAuthState } from "./crypto.js";
 
 // Tiny node:http server. Two concerns, same port:
 //   POST /callback/approval          — Slack button click dispatched by CC
-//   GET  /auth/google/{start,callback} — one-time Google OAuth consent
+//   GET  /auth/google/{start,callback} — one-time Google OAuth consent (CC-signed state)
 // ponytail: no framework yet. Four routes is still fine on a switch.
 
 interface Callback {
@@ -114,11 +115,12 @@ export async function startCallbackServer(): Promise<void> {
 
     // ─── GitHub OAuth: start → redirect browser to GitHub consent ───────
     if (req.method === "GET" && url.pathname === "/auth/github/start") {
-      const ccUserId = url.searchParams.get("ccUserId");
-      if (!ccUserId) return void res.writeHead(400).end("missing ?ccUserId=");
+      // `state` is signed by CC for the signed-in user; never trust a raw id.
+      const state = url.searchParams.get("state");
+      if (!verifyOAuthState(state)) return void res.writeHead(401).end("invalid or expired state — start again from Command Center");
       try {
         const { githubAuthUrl } = await import("./github-oauth.js");
-        res.writeHead(302, { Location: githubAuthUrl(ccUserId) }).end();
+        res.writeHead(302, { Location: githubAuthUrl(state!) }).end();
       } catch (err) {
         res.writeHead(500).end(`github start failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -128,12 +130,13 @@ export async function startCallbackServer(): Promise<void> {
     // ─── GitHub OAuth: callback → exchange + persist + close popup ──────
     if (req.method === "GET" && url.pathname === "/auth/github/callback") {
       const code = url.searchParams.get("code");
-      const ccUserId = url.searchParams.get("state");
-      if (!code || !ccUserId) return void res.writeHead(400).end("missing code or state");
+      const owner = verifyOAuthState(url.searchParams.get("state"));
+      if (!code) return void res.writeHead(400).end("missing code");
+      if (!owner) return void res.writeHead(401).end("invalid or expired state — start again from Command Center");
       try {
         const { githubExchange, saveGithubTokens } = await import("./github-oauth.js");
         const cred = await githubExchange(code);
-        await saveGithubTokens(cred.login, ccUserId, cred);
+        await saveGithubTokens(cred.login, owner.ccUserId, cred);
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(
           `<!doctype html><meta charset="utf-8"><title>GitHub Connected</title>
           <body style="font-family:system-ui;padding:40px;max-width:520px;margin:auto">
@@ -163,8 +166,11 @@ export async function startCallbackServer(): Promise<void> {
 
     // ─── Google OAuth: start → redirect browser to Google consent ────────
     if (req.method === "GET" && url.pathname === "/auth/google/start") {
-      const email = url.searchParams.get("email");
-      if (!email) return void res.writeHead(400).end("missing ?email=");
+      // `state` is signed by CC for the signed-in user. `email` is only a
+      // login_hint for Google's account picker — never used as the storage key.
+      const state = url.searchParams.get("state");
+      if (!verifyOAuthState(state)) return void res.writeHead(401).end("invalid or expired state — start again from Command Center");
+      const email = url.searchParams.get("email") ?? undefined;
       const client = oauthClient();
       const authUrl = client.generateAuthUrl({
         access_type: "offline",
@@ -175,7 +181,7 @@ export async function startCallbackServer(): Promise<void> {
           "https://www.googleapis.com/auth/tasks",
         ],
         login_hint: email,
-        state: email,
+        state: state!,
       });
       res.writeHead(302, { Location: authUrl }).end();
       return;
@@ -184,8 +190,9 @@ export async function startCallbackServer(): Promise<void> {
     // ─── Google OAuth: callback → exchange + persist ─────────────────────
     if (req.method === "GET" && url.pathname === "/auth/google/callback") {
       const code = url.searchParams.get("code");
-      const email = url.searchParams.get("state"); // we stuffed email into state
-      if (!code || !email) return void res.writeHead(400).end("missing code or state");
+      const owner = verifyOAuthState(url.searchParams.get("state"));
+      if (!code) return void res.writeHead(400).end("missing code");
+      if (!owner) return void res.writeHead(401).end("invalid or expired state — start again from Command Center");
       try {
         const client = oauthClient();
         const { tokens } = await client.getToken(code);
@@ -193,16 +200,19 @@ export async function startCallbackServer(): Promise<void> {
           res.writeHead(400).end("no refresh_token returned — revoke prior grants in your Google account settings and retry");
           return;
         }
-        await saveTokens(email, {
+        // Key the credential by the address Google says these tokens belong
+        // to, not anything the browser sent — so picking a different account
+        // on the consent screen can't land tokens under the wrong email.
+        const verify = new google.auth.OAuth2();
+        verify.setCredentials({ access_token: tokens.access_token });
+        const profile = await google.gmail({ version: "v1", auth: verify }).users.getProfile({ userId: "me" });
+        if (!profile.data.emailAddress) throw new Error("Google profile returned no email address");
+        await saveTokens(profile.data.emailAddress, {
           access_token: tokens.access_token!,
           refresh_token: tokens.refresh_token,
           expiry_date: tokens.expiry_date ?? Date.now() + 3600 * 1000,
           scope: tokens.scope,
-        });
-        // Verify + show which account landed.
-        const verify = new google.auth.OAuth2();
-        verify.setCredentials({ access_token: tokens.access_token });
-        const profile = await google.gmail({ version: "v1", auth: verify }).users.getProfile({ userId: "me" });
+        }, { ccUserId: owner.ccUserId, orgId: owner.orgId });
         // Signal the opener (Connected Accounts panel) so it can refresh the
         // list, then auto-close. Falls back to a manual-close message when
         // the tab was opened directly (no opener, or opener on a different

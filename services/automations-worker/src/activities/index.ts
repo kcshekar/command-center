@@ -18,6 +18,13 @@ export { remindUpcomingInterviewRounds } from "./interview-reminders.js";
 export { syncGoogleCalendarInterviews } from "./calendar-sync.js";
 export { sweepUnembeddedKnowledgeItems } from "./embedder.js";
 export { openGithubPrFromKnowledgeItem } from "./github-pr.js";
+export { buildDailySpendReport } from "./spend-report.js";
+export { buildSubscriptionsReport, buildBillForecast, buildBudgetReport } from "./money-reports.js";
+export { buildDocumentExpiryReport } from "./doc-expiry.js";
+export { buildLearningCheck } from "./learning-check.js";
+export { buildOccasionsReport } from "./occasions.js";
+export { fetchWeatherBrief, draftAffirmation } from "./morning-extras.js";
+export { buildHabitCheckin, buildGroceryList, buildVehicleReport } from "./life-reports.js";
 
 // ─── Google reads ────────────────────────────────────────────────────────────
 
@@ -56,13 +63,15 @@ export async function fetchGoogleTasks(userEmail: string): Promise<Array<{ title
 // ─── Gmail ingest ────────────────────────────────────────────────────────────
 
 // Polling-mode ingest (D-simplification): reads new messages since our stored
-// historyId, updates the cursor, returns the delta. Push/Pub-Sub can drop in
-// later without changing the workflow shape.
+// historyId and returns the delta plus the historyId to advance to. The
+// cursor is NOT moved here — the workflow calls commitGmailCursor only after
+// every message is classified/ingested, so an Ollama outage replays the batch
+// on the next tick instead of silently dropping it.
 // ponytail: polling, add push subscription if latency ever matters.
 export async function fetchGmailHistory(
   userEmail: string,
   fallbackLookbackHours = 2
-): Promise<Array<{ id: string; threadId: string; subject: string; from: string; snippet: string }>> {
+): Promise<{ messages: Array<{ id: string; threadId: string; subject: string; from: string; snippet: string }>; historyId: string }> {
   const gmail = await gmailClient(userEmail);
 
   const cursorRes = await pool.query(
@@ -118,22 +127,32 @@ export async function fetchGmailHistory(
     });
   }
 
+  return { messages, historyId: String(newHistoryId) };
+}
+
+export async function commitGmailCursor(userEmail: string, historyId: string): Promise<void> {
   await pool.query(
     `INSERT INTO gmail_history_cursors (user_email, last_history_id, last_synced_at)
      VALUES ($1, $2, now())
      ON CONFLICT (user_email) DO UPDATE SET last_history_id = EXCLUDED.last_history_id, last_synced_at = now()`,
-    [userEmail, newHistoryId]
+    [userEmail, historyId]
   );
-
-  return messages;
 }
 
 // ─── LLM ──────────────────────────────────────────────────────────────────────
 
+// Malformed model output for one message → null (stays "unclassified").
+// Transport errors (Ollama unreachable, 5xx) throw so the triage run fails
+// before committing the Gmail cursor and the batch is retried next tick.
 export async function classifyEmailOllama(
   input: { subject: string; snippet: string; from: string }
-): Promise<Classification> {
-  return classifyEmail(input.subject, input.snippet, input.from);
+): Promise<Classification | null> {
+  try {
+    return await classifyEmail(input.subject, input.snippet, input.from);
+  } catch (err) {
+    if (err instanceof SyntaxError || /invalid category/.test(String(err))) return null;
+    throw err;
+  }
 }
 
 // ─── Command Center ──────────────────────────────────────────────────────────
@@ -156,14 +175,18 @@ export async function postApprovalNotification(
   return cc.notifyApproval(routeKey, text, blocks, workflowId, actionId);
 }
 
+// Called once per approval, after it is settled. `approvalState` also settles
+// the in-app copy so Today/Inbox stop listing it as pending (Slack-side clicks
+// and 24h expiry never touched the in-app row before).
 export async function updateApprovalNotification(
   routeKey: string,
   refs: PostedRef[],
-  text: string
+  text: string,
+  approvalState?: "approved" | "rejected" | "expired"
 ): Promise<void> {
   await cc.updateNotification(routeKey, refs, text, [
     { type: "section", text: { type: "mrkdwn", text } },
-  ]);
+  ], approvalState);
 }
 
 // ─── Gmail mutations (Phase 4) ────────────────────────────────────────────
@@ -185,7 +208,8 @@ export async function trashGmailMessages(userEmail: string, messageIds: string[]
 // idempotent. Returns {ok, via} for the caller to log.
 export async function ingestExpenseFromEmail(
   messageId: string,
-  email: EmailInput
+  email: EmailInput,
+  owner?: { userId: string; zone: "personal" | "professional" }
 ): Promise<{ ok: boolean; via: "deterministic" | "ollama" | "none"; parser?: string }> {
   const det = parseExpenseEmail(email);
   if (det) {
@@ -198,6 +222,7 @@ export async function ingestExpenseFromEmail(
       source: "gmail",
       externalId: messageId,
       note: `Parsed by ${det.parser}`,
+      ...owner,
     });
     return { ok: true, via: "deterministic", parser: det.parser };
   }
@@ -214,6 +239,7 @@ export async function ingestExpenseFromEmail(
     source: "gmail",
     externalId: messageId,
     note: `Parsed by Ollama (confidence ${llm.confidence.toFixed(2)})`,
+    ...owner,
   });
   return { ok: true, via: "ollama" };
 }
