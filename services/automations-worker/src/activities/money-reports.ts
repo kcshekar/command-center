@@ -106,6 +106,26 @@ export function formatBudgets(budgets: BudgetStatus[], today: string): string | 
   return lines.join("\n");
 }
 
+// --- R12 -------------------------------------------------------------------
+
+export interface NetWorthSnapshot { on: string; assetsCents: string; liabilitiesCents: string; accounts: number }
+
+export function formatNetWorth(s: NetWorthSnapshot | null, prev: NetWorthSnapshot | null): string {
+  if (!s) return "Net worth: set balances on your accounts in Finance → Personal → Accounts (cards and loans as the amount owed) to start tracking it.";
+  const net = Number(s.assetsCents) - Number(s.liabilitiesCents);
+  const sign = (n: number) => `${n < 0 ? "−" : ""}${inr(Math.abs(n))}`;
+  const lines = [
+    `*Net worth on ${short(s.on)}:* ${sign(net)}`,
+    `Assets ${inr(Number(s.assetsCents))} − owed ${inr(Number(s.liabilitiesCents))}, from ${s.accounts} account${s.accounts === 1 ? "" : "s"}`,
+  ];
+  if (prev) {
+    const delta = net - (Number(prev.assetsCents) - Number(prev.liabilitiesCents));
+    lines.push(`${delta >= 0 ? "▲" : "▼"} ${delta >= 0 ? "+" : "−"}${inr(Math.abs(delta))} since ${short(prev.on)}`);
+  }
+  lines.push("_Based on balances you entered; update them before the 1st for an accurate figure._");
+  return lines.join("\n");
+}
+
 // --- activities --------------------------------------------------------------
 
 type Input = { userId: string; routeKey: string; date?: string };
@@ -132,6 +152,13 @@ export async function buildBillForecast(input: Input & { days?: number }) {
     cc.financeBalances(input.userId, "personal"),
   ]);
   return post(input.routeKey, formatBillForecast(bills, balances, today, input.days ?? 30), "n9.bills");
+}
+
+export async function buildNetWorthReport(input: Input) {
+  const today = input.date ?? todayIn();
+  const { snapshot, previous } = await cc.netWorthSnapshot(input.userId, today);
+  await cc.notify(input.routeKey, formatNetWorth(snapshot, previous));
+  return { posted: true, recorded: snapshot !== null };
 }
 
 export async function buildBudgetReport(input: Input) {

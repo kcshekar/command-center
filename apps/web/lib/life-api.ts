@@ -8,6 +8,10 @@ export interface VehicleLog {
   id: string; kind: "fuel" | "service"; logged_on: string; odometer_km: number;
   litres: number | null; amount_cents: number | null; full_tank: boolean; notes: string | null;
 }
+export interface TravelBooking {
+  id: string; kind: "flight" | "train" | "bus" | "hotel" | "other"; provider: string | null; reference: string | null;
+  from_place: string | null; to_place: string | null; depart_at: string; end_at: string | null;
+}
 export interface Vehicle { id: string; name: string; service_every_km: number | null; service_every_months: number | null; logs: VehicleLog[] }
 
 const json = (body: unknown) => ({ body: JSON.stringify(body) });
@@ -23,6 +27,9 @@ export const lifeApi = {
   addGroceries: (text: string) => apiFetch<GroceryItem[]>("/groceries", { method: "POST", ...json({ text }) }),
   setGroceryDone: (id: string, done: boolean) => apiFetch<GroceryItem>(`/groceries/${id}`, { method: "PATCH", ...json({ done }) }),
   deleteGrocery: (id: string) => apiFetch(`/groceries/${id}`, { method: "DELETE" }),
+
+  trips: () => apiFetch<TravelBooking[]>("/travel"),
+  deleteTrip: (id: string) => apiFetch(`/travel/${id}`, { method: "DELETE" }),
 
   vehicles: () => apiFetch<Vehicle[]>("/vehicles"),
   addVehicle: (v: { name: string; serviceEveryKm?: number | null; serviceEveryMonths?: number | null }) =>

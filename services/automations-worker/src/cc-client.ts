@@ -17,6 +17,8 @@ const ALL_SCOPES = [
   "expenses:read",
   "occasions:read",
   "life:read",
+  "travel:write",
+  "invoices:write",
   "prices:write",
   "prices:read",
   "credentials:read",
@@ -266,6 +268,30 @@ export const cc = {
       `/api/integrations/expenses/daily?userId=${encodeURIComponent(userId)}&zone=${zone}&date=${date}`
     ),
 
+  // N12 — CA invoice batches: prepare (no email) and send (after approval).
+  prepareCaBatches: (userId: string, periodMonth: string) =>
+    call<import("./ca-card.js").PreparedBatch[]>(`/api/integrations/ca-batches/prepare`, {
+      method: "POST", body: JSON.stringify({ userId, periodMonth }),
+    }),
+  sendCaBatch: (userId: string, batchId: string) =>
+    call(`/api/integrations/ca-batches/${encodeURIComponent(batchId)}/send`, { method: "POST", body: JSON.stringify({ userId }) }),
+
+  // R14 — travel bookings.
+  upsertTravelBooking: (body: {
+    userId: string; sourceMessageId: string; kind: string; provider: string | null; reference: string | null;
+    from: string | null; to: string | null; departAt: string; endAt: string | null;
+  }) => call<{ id: string }>(`/api/integrations/travel`, { method: "POST", body: JSON.stringify(body) }),
+  departingTrips: (userId: string, from: string, to: string) =>
+    call<import("./activities/travel.js").TripBooking[]>(
+      `/api/integrations/travel/departing?userId=${encodeURIComponent(userId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+    ),
+
+  // N13 — keyword search over the user's knowledge items.
+  searchKnowledgeItems: (userId: string, q: string, limit = 3) =>
+    call<Array<{ id: string; type: string; title: string; createdOn: string }>>(
+      `/api/integrations/knowledge-items/search?userId=${encodeURIComponent(userId)}&q=${encodeURIComponent(q)}&limit=${limit}`
+    ),
+
   // R11 / R7 / R9 — life trackers.
   lifeHabits: (userId: string) =>
     call<import("./activities/life-reports.js").HabitDays[]>(`/api/integrations/life/habits?userId=${encodeURIComponent(userId)}`),
@@ -286,6 +312,10 @@ export const cc = {
   financeBalances: (userId: string, zone: "personal" | "professional") =>
     call<import("./activities/money-reports.js").Balance[]>(
       `/api/integrations/finance/balances?userId=${encodeURIComponent(userId)}&zone=${zone}`
+    ),
+  netWorthSnapshot: (userId: string, on: string) =>
+    call<{ snapshot: import("./activities/money-reports.js").NetWorthSnapshot | null; previous: import("./activities/money-reports.js").NetWorthSnapshot | null }>(
+      `/api/integrations/finance/net-worth-snapshot`, { method: "POST", body: JSON.stringify({ userId, on }) }
     ),
   financeBudgets: (userId: string, date: string) =>
     call<{ date: string; budgets: import("./activities/money-reports.js").BudgetStatus[] }>(

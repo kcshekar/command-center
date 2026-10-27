@@ -124,6 +124,23 @@ export const lifeRoutes = {
     }),
   },
 
+  // --- R14 trips ---------------------------------------------------------------
+  "/api/travel": {
+    // Upcoming bookings plus the last 30 days (so a just-finished trip is still there).
+    GET: tenantRoute(async (_req, ctx) => Response.json(await ctx.tx`
+      SELECT id, kind, provider, reference, from_place, to_place, depart_at, end_at
+      FROM travel_bookings WHERE depart_at > now() - interval '30 days'
+      ORDER BY depart_at
+    `)),
+  },
+  "/api/travel/:id": {
+    DELETE: tenantRoute(async (req, ctx) => {
+      const [row] = await ctx.tx`DELETE FROM travel_bookings WHERE id = ${req.params.id} RETURNING id`;
+      if (!row) throw new HttpError(404, "not found");
+      return new Response(null, { status: 204 });
+    }),
+  },
+
   // --- R9 vehicles -------------------------------------------------------------
   "/api/vehicles": {
     // Vehicles with their last 30 logs (newest first).

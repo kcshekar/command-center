@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatBillForecast, formatBudgets, formatSubscriptions, type Bill } from "./money-reports.js";
+import { formatBillForecast, formatBudgets, formatNetWorth, formatSubscriptions, type Bill } from "./money-reports.js";
 import { alertsFor, formatExpiry } from "./doc-expiry.js";
 
 const bill = (name: string, amountRs: number, cadence: string, dueDay: number | null, dueMonth: number | null = null, category = "subscription"): Bill =>
@@ -55,4 +55,15 @@ test("R2: milestones only, daily in last 3 days and a week after", () => {
   assert.deepEqual(alerts.map((a) => [a.title, a.daysLeft]), [["Licence", -7], ["PUC", 2], ["Car insurance", 30]]);
   assert.match(formatExpiry(alerts)!, /• PUC \(vehicle\) — ⚠️ expires in 2 days/);
   assert.equal(formatExpiry([]), null);
+});
+
+test("R12: net worth, change since last snapshot, negative net, no balances", () => {
+  const now = { on: "2026-11-01", assetsCents: "50000000", liabilitiesCents: "12000000", accounts: 4 };
+  const prev = { on: "2026-10-01", assetsCents: "45000000", liabilitiesCents: "13000000", accounts: 4 };
+  const text = formatNetWorth(now, prev);
+  assert.match(text, /\*Net worth on 1 Nov:\* ₹3,80,000/);
+  assert.match(text, /Assets ₹5,00,000 − owed ₹1,20,000, from 4 accounts/);
+  assert.match(text, /▲ \+₹60,000 since 1 Oct/);
+  assert.match(formatNetWorth({ ...now, assetsCents: "1000000" }, null), /Net worth on 1 Nov:\* −₹1,10,000/);
+  assert.match(formatNetWorth(null, null), /set balances on your accounts/);
 });

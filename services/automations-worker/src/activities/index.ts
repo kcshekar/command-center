@@ -19,12 +19,16 @@ export { syncGoogleCalendarInterviews } from "./calendar-sync.js";
 export { sweepUnembeddedKnowledgeItems } from "./embedder.js";
 export { openGithubPrFromKnowledgeItem } from "./github-pr.js";
 export { buildDailySpendReport } from "./spend-report.js";
-export { buildSubscriptionsReport, buildBillForecast, buildBudgetReport } from "./money-reports.js";
+export { buildSubscriptionsReport, buildBillForecast, buildBudgetReport, buildNetWorthReport } from "./money-reports.js";
 export { buildDocumentExpiryReport } from "./doc-expiry.js";
 export { buildLearningCheck } from "./learning-check.js";
 export { buildOccasionsReport } from "./occasions.js";
 export { fetchWeatherBrief, draftAffirmation } from "./morning-extras.js";
 export { buildHabitCheckin, buildGroceryList, buildVehicleReport } from "./life-reports.js";
+export { buildMeetingPrep } from "./meeting-prep.js";
+export { ingestTravelBookingEmail, buildTripPack } from "./travel.js";
+export { prepareCaBatches, sendPreparedCaBatch } from "./ca-invoices.js";
+export { scanDependencyVulns } from "./security-scan.js";
 
 // ─── Google reads ────────────────────────────────────────────────────────────
 

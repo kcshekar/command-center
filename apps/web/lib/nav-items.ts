@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
-  Bell, BellRing, BookOpen, Bot, Briefcase, Car, CheckCircle2, Circle, Gift, GraduationCap, Inbox, Key, KeyRound, Lock, ShoppingCart,
+  Bell, BellRing, BookOpen, Bot, Briefcase, Car, CheckCircle2, Circle, Gift, GraduationCap, Inbox, Key, KeyRound, Lock, Plane, ShoppingCart,
   MessageSquare, Settings2, Smartphone, Sun, Tag, Terminal, UserCircle, Users, Wallet, Zap,
 } from "lucide-react";
 import { automationsApi, type CatalogRow } from "@/lib/automations-api";
@@ -62,6 +62,7 @@ const ICONS: Record<string, Icon> = {
   "check-circle": CheckCircle2,
   "shopping-cart": ShoppingCart,
   car: Car,
+  plane: Plane,
 };
 
 export function catalogNavItems(rows: CatalogRow[]): NavItem[] {

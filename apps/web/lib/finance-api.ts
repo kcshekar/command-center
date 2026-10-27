@@ -145,7 +145,9 @@ export const financeApi = {
   setBudget: (category: string, monthlyLimitCents: number) =>
     apiFetch<Budget>("/finance/budgets", { method: "PUT", body: JSON.stringify({ category, monthlyLimitCents }) }),
   deleteBudget: (budgetId: string) => apiFetch(`/finance/budgets/${budgetId}`, { method: "DELETE" }),
-  createAccount: (params: { name: string; kind: string }) => apiFetch<Account>("/finance/accounts", { method: "POST", body: JSON.stringify(params) }),
+  createAccount: (params: { name: string; kind: string; zone?: Zone }) => apiFetch<Account>("/finance/accounts", { method: "POST", body: JSON.stringify(params) }),
+  updateAccount: (accountId: string, patch: { kind?: string; name?: string }) =>
+    apiFetch(`/finance/accounts/${accountId}`, { method: "PATCH", body: JSON.stringify(patch) }),
 
   listBills: (zone?: Zone) => apiFetch<RecurringBill[]>(`/finance/bills?${zq(zone)}`),
   createBill: (params: { name: string; amountCents: number; currency?: string; cadence: string; dueDay?: number; dueMonth?: number; category: string; zone?: Zone }) =>

@@ -32,5 +32,13 @@
     "@types/pg": "^8.11.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri": "3.1.9",
+      "google-auth-library@11>gaxios": "8.3.1",
+      "google-auth-library@11>gcp-metadata": "9.2.1",
+      "gcp-metadata@9>gaxios": "8.3.1"
+    }
   }
 }

@@ -1,6 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { categoryFor, parseUpiDebit } from "../../core/upi-sms";
 import { extractSmsDebit } from "../../core/ollama";
+import { generateCaBatch, sendCaBatch } from "../finance/ca-batches";
 import { serviceTokenRoute, tenantRoute } from "../../core/router";
 import { writeAudit } from "../../core/audit";
 import { HttpError } from "../../core/auth";
@@ -134,6 +135,26 @@ export const integrationRoutes = {
     }),
   },
 
+  // N13 — keyword search over the owner's knowledge items (generated tsv +
+  // GIN index, migration 0031); websearch syntax tolerates any meeting title.
+  "/api/integrations/knowledge-items/search": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "knowledge:read");
+      const url = new URL(req.url);
+      const q = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
+      const n = Number(url.searchParams.get("limit") ?? 3);
+      const limit = Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), 1), 10) : 3;
+      if (!q) return Response.json([]);
+      return Response.json(await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        SELECT id, type, title, to_char(created_at, 'YYYY-MM-DD') AS "createdOn"
+        FROM knowledge_items
+        WHERE tsv @@ websearch_to_tsquery('english', ${q})
+        ORDER BY ts_rank(tsv, websearch_to_tsquery('english', ${q})) DESC, created_at DESC
+        LIMIT ${limit}
+      `));
+    }),
+  },
+
   // R3 — the owner's birthdays / anniversaries (all of them; the worker
   // decides which are 7 days out or today, with money-dates.nextDue).
   "/api/integrations/occasions": {
@@ -144,6 +165,118 @@ export const integrationRoutes = {
         SELECT person, relationship, kind, month, day, year, notes FROM occasions ORDER BY month, day
       `);
       return Response.json(rows);
+    }),
+  },
+
+  // N12 — prepare last month's CA batches for every finance project the user
+  // can see. Projects with no foreign-currency inward entries are skipped.
+  // Nothing is emailed here; the worker asks for approval first.
+  "/api/integrations/ca-batches/prepare": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "invoices:write");
+      const { userId, periodMonth } = (await req.json().catch(() => ({}))) as { userId?: string; periodMonth?: string };
+      if (typeof periodMonth !== "string" || !/^\d{4}-\d{2}$/.test(periodMonth)) throw new HttpError(400, "periodMonth (YYYY-MM) is required");
+      const batches = await asOwner(ctx, userId ?? null, async (tx) => {
+        const [me] = await tx`SELECT role FROM users WHERE id = ${userId}::uuid`;
+        if (me?.role !== "owner" && me?.role !== "admin") throw new HttpError(403, "CA invoices need an owner or admin");
+        const actor = { userId: userId!, orgId: ctx.orgId, role: me.role };
+        const projects = await tx`SELECT id, name FROM finance_projects ORDER BY name`;
+        const out = [];
+        for (const p of projects) {
+          const [entries] = await tx`
+            SELECT count(*)::int AS n FROM ledger_entries
+            WHERE finance_project_id = ${p.id} AND direction = 'inward' AND currency <> 'INR'
+              AND occurred_on >= ${periodMonth + "-01"}::date AND occurred_on < (${periodMonth + "-01"}::date + INTERVAL '1 month')
+          `;
+          if (entries.n === 0) continue;
+          const [already] = await tx`
+            SELECT id FROM ca_invoice_batches WHERE finance_project_id = ${p.id} AND period_month = ${periodMonth + "-01"}::date AND status = 'sent'
+          `;
+          if (already) continue; // sent by hand already
+          const batch = await generateCaBatch(tx, actor, p.id, periodMonth);
+          const [last] = await tx`
+            SELECT recipient_email FROM ca_invoice_batches
+            WHERE finance_project_id = ${p.id} AND status = 'sent' AND recipient_email <> '' ORDER BY sent_at DESC LIMIT 1
+          `;
+          const recipient = last?.recipient_email ?? "";
+          if (recipient) await tx`UPDATE ca_invoice_batches SET recipient_email = ${recipient} WHERE id = ${batch.id}`;
+          const totals = await tx`
+            SELECT currency, SUM(amount_cents)::bigint AS cents FROM ca_invoices WHERE batch_id = ${batch.id} GROUP BY currency
+          `;
+          out.push({
+            batchId: batch.id, project: p.name, periodMonth, invoiceCount: batch.invoiceCount,
+            totals: totals.map((t: { currency: string; cents: bigint }) => `${(Number(t.cents) / 100).toFixed(2)} ${t.currency}`).join(", "),
+            recipientEmail: recipient, subject: batch.draft_subject, body: batch.draft_body,
+          });
+        }
+        return out;
+      });
+      return Response.json(batches);
+    }),
+  },
+  // N12 — send a prepared batch after the user approved it.
+  "/api/integrations/ca-batches/:batchId/send": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "invoices:write");
+      const { batchId } = req.params;
+      const { userId } = (await req.json().catch(() => ({}))) as { userId?: string };
+      await asOwner(ctx, userId ?? null, async (tx) => {
+        const [me] = await tx`SELECT role FROM users WHERE id = ${userId}::uuid`;
+        if (me?.role !== "owner" && me?.role !== "admin") throw new HttpError(403, "CA invoices need an owner or admin");
+        const [b] = await tx`SELECT recipient_email, draft_subject, draft_body FROM ca_invoice_batches WHERE id = ${batchId}`;
+        if (!b) throw new HttpError(404, "batch not found");
+        if (!b.recipient_email) throw new HttpError(400, "no CA email on this batch — send it once from Finance to set it");
+        await sendCaBatch(tx, { userId: userId!, orgId: ctx.orgId, role: me.role }, batchId, {
+          recipientEmail: b.recipient_email, subject: b.draft_subject, body: b.draft_body,
+        });
+      });
+      return Response.json({ ok: true });
+    }),
+  },
+
+  // R14 — a booking found in Gmail (idempotent per source email).
+  "/api/integrations/travel": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "travel:write");
+      const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      const kinds = ["flight", "train", "bus", "hotel", "other"];
+      const kind = typeof b.kind === "string" && kinds.includes(b.kind) ? b.kind : "other";
+      const iso = (v: unknown) => (typeof v === "string" && !Number.isNaN(Date.parse(v)) ? new Date(v) : null);
+      const departAt = iso(b.departAt);
+      if (!departAt) throw new HttpError(400, "departAt (ISO date-time) is required");
+      if (typeof b.sourceMessageId !== "string" || !b.sourceMessageId) throw new HttpError(400, "sourceMessageId is required");
+      const t = (v: unknown, max = 120) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
+      const row = await asOwner(ctx, typeof b.userId === "string" ? b.userId : null, async (tx) => {
+        const [r] = await tx`
+          INSERT INTO travel_bookings (org_id, owner_user_id, kind, provider, reference, from_place, to_place, depart_at, end_at, source_message_id)
+          VALUES (${ctx.orgId}, ${b.userId}, ${kind}, ${t(b.provider)}, ${t(b.reference, 40)}, ${t(b.from)}, ${t(b.to)},
+                  ${departAt}, ${iso(b.endAt)}, ${b.sourceMessageId})
+          ON CONFLICT (owner_user_id, source_message_id) DO UPDATE
+            SET kind = EXCLUDED.kind, provider = EXCLUDED.provider, reference = EXCLUDED.reference,
+                from_place = EXCLUDED.from_place, to_place = EXCLUDED.to_place,
+                depart_at = EXCLUDED.depart_at, end_at = EXCLUDED.end_at
+          RETURNING id
+        `;
+        return r;
+      });
+      return Response.json(row, { status: 201 });
+    }),
+  },
+  // R14 — bookings departing in [from, to) for the trip pack.
+  "/api/integrations/travel/departing": {
+    GET: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "life:read");
+      const url = new URL(req.url);
+      const from = url.searchParams.get("from") ?? "";
+      const to = url.searchParams.get("to") ?? "";
+      if (Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) throw new HttpError(400, "from and to (ISO) are required");
+      return Response.json(await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
+        SELECT kind, provider, reference, from_place AS "from", to_place AS "to",
+               depart_at AS "departAt", end_at AS "endAt"
+        FROM travel_bookings
+        WHERE depart_at >= ${new Date(from)} AND depart_at < ${new Date(to)}
+        ORDER BY depart_at
+      `));
     }),
   },
 
@@ -187,6 +320,41 @@ export const integrationRoutes = {
                ), '[]'::json) AS logs
         FROM vehicles v ORDER BY v.created_at
       `));
+    }),
+  },
+
+  // R12 — take (or refresh) the month's net-worth snapshot from personal
+  // account balances and return it with the previous one for the change.
+  "/api/integrations/finance/net-worth-snapshot": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "expenses:write");
+      const { userId, on } = (await req.json().catch(() => ({}))) as { userId?: string; on?: string };
+      if (typeof on !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(on)) throw new HttpError(400, "on (YYYY-MM-DD) is required");
+      const result = await asOwner(ctx, userId ?? null, async (tx) => {
+        const [sum] = await tx`
+          SELECT COALESCE(SUM(balance_cents) FILTER (WHERE kind IN ('bank','investment','cash')), 0)::bigint AS assets,
+                 COALESCE(SUM(balance_cents) FILTER (WHERE kind IN ('credit_card','loan')), 0)::bigint AS liabilities,
+                 count(*)::int AS counted
+          FROM accounts WHERE zone = 'personal' AND balance_cents IS NOT NULL
+        `;
+        if (sum.counted === 0) return { snapshot: null, previous: null };
+        const [snapshot] = await tx`
+          INSERT INTO net_worth_snapshots (org_id, owner_user_id, snapshot_on, assets_cents, liabilities_cents, accounts_counted)
+          VALUES (${ctx.orgId}, ${userId}, ${on}::date, ${sum.assets}, ${sum.liabilities}, ${sum.counted})
+          ON CONFLICT (owner_user_id, snapshot_on) DO UPDATE
+            SET assets_cents = EXCLUDED.assets_cents, liabilities_cents = EXCLUDED.liabilities_cents,
+                accounts_counted = EXCLUDED.accounts_counted
+          RETURNING to_char(snapshot_on, 'YYYY-MM-DD') AS "on", assets_cents::text AS "assetsCents",
+                    liabilities_cents::text AS "liabilitiesCents", accounts_counted AS "accounts"
+        `;
+        const [previous] = await tx`
+          SELECT to_char(snapshot_on, 'YYYY-MM-DD') AS "on", assets_cents::text AS "assetsCents",
+                 liabilities_cents::text AS "liabilitiesCents", accounts_counted AS "accounts"
+          FROM net_worth_snapshots WHERE snapshot_on < ${on}::date ORDER BY snapshot_on DESC LIMIT 1
+        `;
+        return { snapshot, previous: previous ?? null };
+      });
+      return Response.json(result);
     }),
   },
 

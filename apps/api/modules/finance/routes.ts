@@ -3,8 +3,8 @@ import { tenantRoute } from "../../core/router";
 import { requireRole, assertOwnerOrGrant } from "../../core/rbac";
 import { writeAudit } from "../../core/audit";
 import { HttpError, type AuthCtx } from "../../core/auth";
-import { renderInvoicePdf, invoiceNumberFor } from "./ca-invoice-pdf";
-import { draftText } from "../../core/ollama";
+import { ensureInvoice, generateCaBatch, sendCaBatch } from "./ca-batches";
+import { renderInvoicePdf } from "./ca-invoice-pdf";
 import { sendEmail } from "../../core/email";
 
 async function assertFinanceProjectAccess(
@@ -16,32 +16,6 @@ async function assertFinanceProjectAccess(
   const [project] = await tx`SELECT owner_id FROM finance_projects WHERE id = ${projectId}`;
   if (!project) throw new HttpError(404, "not found");
   await assertOwnerOrGrant(tx, ctx, "finance_project", projectId, project.owner_id, scope);
-}
-
-// Get-or-create the CA invoice row for one ledger entry. The invoice number
-// is assigned once, on first call, and persisted — reused by both the
-// single-entry download route and the monthly batch generator so an entry
-// invoiced individually and later swept into a batch keeps the same number.
-async function ensureInvoice(tx: SQL, ctx: AuthCtx, entry: { id: string; currency: string; amount_cents: number; occurred_on: string | Date }) {
-  let [invoice] = await tx`
-    SELECT id, invoice_number, invoice_date, amount_cents, currency FROM ca_invoices WHERE ledger_entry_id = ${entry.id}
-  `;
-  if (invoice) return invoice;
-
-  // Bun's postgres driver round-trips a `date` column as a JS Date; handing
-  // that Date straight back into a query serializes it with a
-  // local-timezone abbreviation ("GMT+0530") Postgres can't parse, so it's
-  // normalized to a plain YYYY-MM-DD string first.
-  const occurredOnStr = new Date(entry.occurred_on).toISOString().slice(0, 10);
-  const [{ count }] = await tx`SELECT count(*)::int FROM ca_invoices WHERE invoice_date = ${occurredOnStr}`;
-  const invoiceNumber = invoiceNumberFor(new Date(entry.occurred_on), count + 1);
-  [invoice] = await tx`
-    INSERT INTO ca_invoices (org_id, ledger_entry_id, invoice_number, invoice_date, currency, amount_cents, created_by)
-    VALUES (${ctx.orgId}, ${entry.id}, ${invoiceNumber}, ${occurredOnStr}, ${entry.currency}, ${entry.amount_cents}, ${ctx.userId})
-    RETURNING id, invoice_number, invoice_date, amount_cents, currency
-  `;
-  await writeAudit(tx, ctx, { action: "ca_invoice:create", resourceType: "ca_invoice", resourceId: entry.id, metadata: { invoiceNumber } });
-  return invoice;
 }
 
 type Zone = "personal" | "professional";
@@ -95,6 +69,26 @@ export const financeRoutes = {
       `;
       await writeAudit(ctx.tx, ctx, { action: "account:create", resourceType: "account", resourceId: row.id, metadata: { zone } });
       return Response.json(row, { status: 201 });
+    }),
+  },
+
+  // R12: what kind of account it is decides asset vs. liability in net worth.
+  "/api/finance/accounts/:accountId": {
+    PATCH: tenantRoute(async (req, ctx) => {
+      const { accountId } = req.params;
+      const { kind, name } = await req.json().catch(() => ({}));
+      if (kind !== undefined && !["bank", "credit_card", "loan", "investment", "cash"].includes(kind)) {
+        throw new HttpError(400, "kind must be bank | credit_card | loan | investment | cash");
+      }
+      const [acct] = await ctx.tx`SELECT zone FROM accounts WHERE id = ${accountId}`;
+      if (!acct) throw new HttpError(404, "not found");
+      if (acct.zone === "professional") requireRole(ctx, ["owner", "admin"]);
+      await ctx.tx`
+        UPDATE accounts SET kind = COALESCE(${kind ?? null}, kind),
+               name = COALESCE(${typeof name === "string" && name.trim() ? name.trim() : null}, name)
+        WHERE id = ${accountId}
+      `;
+      return Response.json({ ok: true });
     }),
   },
 
@@ -505,58 +499,7 @@ export const financeRoutes = {
       const { projectId } = req.params;
       await assertFinanceProjectAccess(ctx.tx, ctx, projectId, "write");
       const { periodMonth } = await req.json();
-      if (!/^\d{4}-\d{2}$/.test(periodMonth ?? "")) throw new HttpError(400, "periodMonth must be YYYY-MM");
-      const firstOfMonth = `${periodMonth}-01`;
-
-      const entries = await ctx.tx`
-        SELECT id, currency, amount_cents, occurred_on, counterparty
-        FROM ledger_entries
-        WHERE finance_project_id = ${projectId} AND direction = 'inward' AND currency <> 'INR'
-          AND occurred_on >= ${firstOfMonth}::date AND occurred_on < (${firstOfMonth}::date + INTERVAL '1 month')
-        ORDER BY occurred_on
-      `;
-      if (entries.length === 0) throw new HttpError(400, "no foreign-currency inward entries found for that month");
-
-      const invoices = [];
-      for (const entry of entries) {
-        const invoice = await ensureInvoice(ctx.tx, ctx, entry);
-        invoices.push({ ...invoice, counterparty: entry.counterparty });
-      }
-
-      const totalsByCurrency = new Map<string, number>();
-      for (const inv of invoices) {
-        totalsByCurrency.set(inv.currency, (totalsByCurrency.get(inv.currency) ?? 0) + Number(inv.amount_cents));
-      }
-      const monthLabel = new Date(`${firstOfMonth}T00:00:00Z`).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
-      const invoiceLines = invoices.map((inv) => `${inv.invoice_number}: ${(Number(inv.amount_cents) / 100).toFixed(2)} ${inv.currency} from ${inv.counterparty}`).join("\n");
-      const totalsLines = [...totalsByCurrency.entries()].map(([cur, cents]) => `${(cents / 100).toFixed(2)} ${cur}`).join(", ");
-      const prompt = `Write a short, professional email (3-4 sentences, no subject line) to a chartered accountant, sending them export invoices for ${monthLabel} to file. Mention there are ${invoices.length} invoice(s) attached, totaling ${totalsLines}. Do not invent any other details.\n\nInvoices:\n${invoiceLines}`;
-      const draftBody = await draftText(prompt);
-      const draftSubject = `Export invoices for ${monthLabel} — PAMETNI TECH IT SOLUTIONS PRIVATE LIMITED`;
-      const recipientEmail = "";
-
-      const [existingDraft] = await ctx.tx`
-        SELECT id FROM ca_invoice_batches WHERE period_month = ${firstOfMonth}::date AND status = 'draft' AND finance_project_id = ${projectId}
-      `;
-      let batch;
-      if (existingDraft) {
-        [batch] = await ctx.tx`
-          UPDATE ca_invoice_batches SET recipient_email = ${recipientEmail}, draft_subject = ${draftSubject}, draft_body = ${draftBody}
-          WHERE id = ${existingDraft.id}
-          RETURNING id, period_month, recipient_email, draft_subject, draft_body, status
-        `;
-      } else {
-        [batch] = await ctx.tx`
-          INSERT INTO ca_invoice_batches (org_id, finance_project_id, period_month, recipient_email, draft_subject, draft_body, created_by)
-          VALUES (${ctx.orgId}, ${projectId}, ${firstOfMonth}::date, ${recipientEmail}, ${draftSubject}, ${draftBody}, ${ctx.userId})
-          RETURNING id, period_month, recipient_email, draft_subject, draft_body, status
-        `;
-      }
-      for (const invoice of invoices) {
-        await ctx.tx`UPDATE ca_invoices SET batch_id = ${batch.id} WHERE id = ${invoice.id}`;
-      }
-      await writeAudit(ctx.tx, ctx, { action: "ca_invoice_batch:generate", resourceType: "ca_invoice_batch", resourceId: batch.id, metadata: { invoiceCount: invoices.length, financeProjectId: projectId } });
-      return Response.json({ ...batch, invoiceCount: invoices.length });
+      return Response.json(await generateCaBatch(ctx.tx, ctx, projectId, periodMonth));
     }),
   },
   "/api/finance/ca-invoice-batches/:batchId/send": {
@@ -566,34 +509,7 @@ export const financeRoutes = {
       const { recipientEmail, subject, body } = await req.json();
       if (!recipientEmail || !subject || !body) throw new HttpError(400, "missing fields");
 
-      const [batch] = await ctx.tx`SELECT id, status FROM ca_invoice_batches WHERE id = ${batchId}`;
-      if (!batch) throw new HttpError(404, "not found");
-      if (batch.status === "sent") throw new HttpError(400, "already sent");
-
-      const batchInvoices = await ctx.tx`
-        SELECT invoice_number, invoice_date, currency, amount_cents FROM ca_invoices WHERE batch_id = ${batchId}
-      `;
-      const attachments = await Promise.all(
-        batchInvoices.map(async (inv: any) => ({
-          filename: `${inv.invoice_number}.pdf`,
-          content: await renderInvoicePdf({
-            invoiceNumber: inv.invoice_number,
-            invoiceDate: new Date(inv.invoice_date),
-            amountCents: Number(inv.amount_cents),
-            currency: inv.currency,
-          }),
-          contentType: "application/pdf",
-        }))
-      );
-
-      await sendEmail(recipientEmail, subject, body.replace(/\n/g, "<br>"), attachments);
-
-      await ctx.tx`
-        UPDATE ca_invoice_batches SET status = 'sent', sent_at = now(), recipient_email = ${recipientEmail}, draft_subject = ${subject}, draft_body = ${body}
-        WHERE id = ${batchId}
-      `;
-      await ctx.tx`UPDATE ca_invoices SET sent_at = now(), recipient_email = ${recipientEmail} WHERE batch_id = ${batchId}`;
-      await writeAudit(ctx.tx, ctx, { action: "ca_invoice_batch:send", resourceType: "ca_invoice_batch", resourceId: batchId, metadata: { invoiceCount: batchInvoices.length, recipientEmail } });
+      await sendCaBatch(ctx.tx, ctx, batchId, { recipientEmail, subject, body });
       return Response.json({ ok: true });
     }),
   },

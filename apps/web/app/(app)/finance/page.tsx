@@ -25,10 +25,31 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 
 // N9: the balance the Sunday bill forecast compares upcoming bills against.
 // Manual by design (no bank access) — the date shows how stale it is.
+const ACCOUNT_KINDS: Array<[string, string]> = [
+  ["bank", "Bank"], ["cash", "Cash"], ["investment", "Investment"], ["credit_card", "Credit card (owed)"], ["loan", "Loan (owed)"],
+];
+
 function AccountsTab() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newKind, setNewKind] = useState("bank");
+
+  async function setKind(a: Account, kind: string) {
+    try { await financeApi.updateAccount(a.id, { kind }); await refresh(); }
+    catch (err) { toast.error(apiErrorMessage(err, "Could not change account type")); }
+  }
+
+  async function addAccount(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newName.trim()) return;
+    try {
+      await financeApi.createAccount({ name: newName.trim(), kind: newKind, zone: "personal" });
+      setNewName(""); setNewKind("bank");
+      await refresh();
+    } catch (err) { toast.error(apiErrorMessage(err, "Could not add account")); }
+  }
 
   async function refresh() {
     try {
@@ -59,19 +80,38 @@ function AccountsTab() {
   }
 
   if (accounts === null) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  const owed = (a: Account) => a.kind === "credit_card" || a.kind === "loan";
+  const assets = accounts.reduce((t, a) => t + (a.balance_cents == null || owed(a) ? 0 : Number(a.balance_cents)), 0);
+  const liabilities = accounts.reduce((t, a) => t + (a.balance_cents == null || !owed(a) ? 0 : Number(a.balance_cents)), 0);
+  const addForm = (
+    <form onSubmit={addAccount} className="flex flex-wrap items-end gap-2">
+      <Input aria-label="New account name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Home loan" className="h-9 w-48" />
+      <select aria-label="New account type" value={newKind} onChange={(e) => setNewKind(e.target.value)} className="h-9 rounded-md border bg-transparent px-2 text-sm">
+        {ACCOUNT_KINDS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+      </select>
+      <Button type="submit" size="sm" variant="outline">Add account</Button>
+    </form>
+  );
   if (accounts.length === 0) {
-    return <p className="text-sm text-muted-foreground">No personal accounts yet. They appear when Mail dispatcher files a bank alert, or when you add an expense against one.</p>;
+    return (
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-muted-foreground">No personal accounts yet. They appear when Mail dispatcher files a bank alert, or add one here.</p>
+        {addForm}
+      </div>
+    );
   }
-  const total = accounts.reduce((t, a) => t + (a.balance_cents == null ? 0 : Number(a.balance_cents)), 0);
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">
-        Balances you set here are what the Sunday <Link href="/automations/n9.bills" className="font-medium text-primary">Bill forecast</Link> checks your upcoming bills against. Total set: <span className="font-mono">{formatCents(total, "INR")}</span>.
+        The Sunday <Link href="/automations/n9.bills" className="font-medium text-primary">Bill forecast</Link> checks bills against these balances, and{" "}
+        <Link href="/automations/r12.networth" className="font-medium text-primary">Net worth</Link> takes a snapshot on the 1st. For cards and loans, enter the amount owed.{" "}
+        Net now: <span className="font-mono">{formatCents(assets - liabilities, "INR")}</span>.
       </p>
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Account</TableHead>
+            <TableHead>Type</TableHead>
             <TableHead>Balance (₹)</TableHead>
             <TableHead>Updated</TableHead>
             <TableHead className="w-0" />
@@ -84,6 +124,11 @@ function AccountsTab() {
             return (
               <TableRow key={a.id}>
                 <TableCell className="[overflow-wrap:anywhere]">{a.name}</TableCell>
+                <TableCell>
+                  <select aria-label={`Type of ${a.name}`} value={a.kind} onChange={(e) => void setKind(a, e.target.value)} className="h-8 rounded-md border bg-transparent px-2 text-xs">
+                    {ACCOUNT_KINDS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                  </select>
+                </TableCell>
                 <TableCell>
                   <Input
                     aria-label={`Balance for ${a.name}`}
@@ -106,6 +151,7 @@ function AccountsTab() {
           })}
         </TableBody>
       </Table>
+      {addForm}
     </div>
   );
 }

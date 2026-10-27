@@ -1,6 +1,7 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
 import { mailReplyWorkflow } from "./mail-reply.js";
+import { isTravelBooking } from "../parsers/travel.js";
 
 const {
   fetchGmailHistory,
@@ -15,6 +16,7 @@ const {
   ingestJobEmailLead,
   logReplyNeeded,
   ingestInterviewSchedulingEmail,
+  ingestTravelBookingEmail,
 } = wf.proxyActivities<typeof activities>({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 3 },
@@ -58,9 +60,19 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ propose
   let jobsIngested = 0;         // A5.1 — job_posting → A2 job_leads
   let replyQueued = 0;          // A5.2 — needs_reply → mailReplyWorkflow child
   let interviewsIngested = 0;   // A5.3 — interview_scheduling → A4 session+round
+  let tripsIngested = 0;        // R14 — confirmed travel bookings
   let ingestFailed = 0;
 
   for (const m of messages) {
+    // R14: bookings are recognised deterministically and never go through the
+    // classifier (so they can't be proposed for trash as "promotional").
+    if (input.userId && isTravelBooking(m)) {
+      try {
+        const r = await ingestTravelBookingEmail(input.userId, input.userEmail, m);
+        if (r.ok) tripsIngested++;
+      } catch { ingestFailed++; }
+      continue;
+    }
     // No catch: if Ollama is unreachable the run fails here, the cursor is
     // never committed, and the next tick replays this batch. Downstream
     // ingests are idempotent on (source, externalId) so replays are safe.
@@ -130,8 +142,8 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ propose
   const trashCandidates = [...(perCategory["promotional"] ?? []), ...(perCategory["spam"] ?? [])];
 
   const ingestionSummary =
-    (expensesIngested || billsIngested || jobsIngested || replyQueued || interviewsIngested || ingestFailed)
-      ? `\n_Ingested: ${expensesIngested} expense(s), ${billsIngested} bill reminder(s), ${jobsIngested} job lead(s), ${replyQueued} reply queue(s), ${interviewsIngested} interview(s)${ingestFailed ? `, ${ingestFailed} failed` : ""}._`
+    (expensesIngested || billsIngested || jobsIngested || replyQueued || interviewsIngested || tripsIngested || ingestFailed)
+      ? `\n_Ingested: ${expensesIngested} expense(s), ${billsIngested} bill reminder(s), ${jobsIngested} job lead(s), ${replyQueued} reply queue(s), ${interviewsIngested} interview(s), ${tripsIngested} trip(s)${ingestFailed ? `, ${ingestFailed} failed` : ""}._`
       : "";
 
   // Everything above is ingested — safe to advance. Committing before the

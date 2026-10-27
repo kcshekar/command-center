@@ -87,12 +87,25 @@ async function main() {
     timezone: scheduleTimezone,
   });
 
+  // N14 weekly dependency security scan — Monday 09:30 IST. Created PAUSED:
+  // turn it on from the Control room when you want it running.
+  await upsertSchedule(client, {
+    scheduleId: "n14-security-weekly",
+    cron: "30 9 * * 1",
+    workflowType: "securityScanWorkflow",
+    args: [{ routeKey: process.env.PLATFORM_UPGRADE_ROUTE_KEY ?? digest }],
+    taskQueue,
+    policies: commonPolicies,
+    timezone: scheduleTimezone,
+    pausedOnCreate: true,
+  });
+
   await connection.close();
 }
 
 async function upsertSchedule(
   client: Client,
-  s: { scheduleId: string; cron: string; workflowType: string; args: unknown[]; taskQueue: string; policies: any; timezone: string }
+  s: { scheduleId: string; cron: string; workflowType: string; args: unknown[]; taskQueue: string; policies: any; timezone: string; pausedOnCreate?: boolean }
 ) {
   const action = { type: "startWorkflow" as const, workflowType: s.workflowType, args: s.args, taskQueue: s.taskQueue };
   const spec = { cronExpressions: [s.cron], timezoneName: s.timezone };
@@ -102,6 +115,7 @@ async function upsertSchedule(
       action,
       spec,
       policies: s.policies,
+      ...(s.pausedOnCreate ? { state: { paused: true, note: "created paused — turn on from the Control room" } } : {}),
     });
     console.log(`created schedule ${s.scheduleId} (${s.timezone})`);
   } catch (err) {
