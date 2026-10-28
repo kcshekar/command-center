@@ -10,16 +10,25 @@ const MODEL = process.env.OLLAMA_MODEL ?? "llama3.2:3b";
 // 4096 fits the longest prompts (travel/mail bodies ~1k tokens + output).
 const NUM_CTX = 4096;
 
-// P0.2: one request at a time per worker process. Ollama runs with
-// OLLAMA_NUM_PARALLEL=1 anyway; queuing here keeps waiting time inside our
-// activity instead of piling up open HTTP requests on the daemon.
-// ponytail: in-process promise-chain lock, swap for async-mutex if we need cancel/timeout semantics.
-let _tail: Promise<unknown> = Promise.resolve();
+// P0.2: at most OLLAMA_CONCURRENCY requests in flight per worker process; the
+// rest wait here instead of piling up open HTTP requests on the daemon. Set it
+// equal to the server's OLLAMA_NUM_PARALLEL: 1 on a CPU box (parallel slots
+// just split the same cores), 4+ on a GPU. A freed slot is handed straight to
+// the next waiter, so a newcomer can never push it over the limit.
+// ponytail: in-process semaphore, no cancel/timeout semantics.
+export const OLLAMA_CONCURRENCY = Math.max(1, Math.trunc(Number(process.env.OLLAMA_CONCURRENCY ?? 1)) || 1);
+let _active = 0;
+const _waiting: Array<() => void> = [];
 const _mutex = {
-  runExclusive<T>(fn: () => Promise<T>): Promise<T> {
-    const run = _tail.then(fn, fn);
-    _tail = run.catch(() => {});
-    return run;
+  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    if (_active < OLLAMA_CONCURRENCY) _active++;
+    else await new Promise<void>((resolve) => _waiting.push(resolve));
+    try {
+      return await fn();
+    } finally {
+      const next = _waiting.shift();
+      if (next) next(); else _active--;
+    }
   },
 };
 

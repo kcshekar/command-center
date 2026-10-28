@@ -344,6 +344,11 @@ See IMPLEMENTATION_ROADMAP.md P1.4 for exact injection points.
 - **Measured on chandu-h110 (CPU-only, Ollama 0.32.6):** decode ~9 tok/s, prompt ~33 tok/s, throughput flat at
   1/2/4 concurrent requests. ReAct research ≈ 75 s; Interview Prep end to end ≈ 2 min.
 
+- **Ollama concurrency (2026-10-29):** the Phase 0 lock is now a semaphore sized by the worker's `OLLAMA_CONCURRENCY`
+  (default 1; the `ollama-local` queue follows it). Keep it equal to the server's `OLLAMA_NUM_PARALLEL`: 1 on CPU-only
+  chandu-h110 (benchmark: throughput flat at 1/2/4 concurrent), 4 on the GPU pod. GKE manifest:
+  `infrastructure/k8s/ollama/ollama-gpu.yaml` (GPU node, model volume, internal LB only; Ollama has no auth).
+
 **Phase 2 prod rollout (user):**
 1. On the Ollama pod: `ollama pull nomic-embed-text`; set `OLLAMA_MAX_LOADED_MODELS=2` (was 1: with 1, every embed
    evicts the chat model), keep `OLLAMA_KEEP_ALIVE=30m`.

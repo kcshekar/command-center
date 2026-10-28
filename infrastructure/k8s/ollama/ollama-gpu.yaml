@@ -1,0 +1,150 @@
+# Ollama on GKE with one NVIDIA GPU, reachable only from inside the VPC.
+#
+#   kubectl apply -f infrastructure/k8s/ollama/ollama-gpu.yaml
+#   kubectl -n ollama rollout status deploy/ollama        # first start pulls ~2.5 GB of models
+#   kubectl -n ollama get svc ollama                      # EXTERNAL-IP = internal LB address
+#
+# Then on the VM, in BOTH .env files (repo root for the API, services/automations-worker for the worker):
+#   OLLAMA_HOST=http://<EXTERNAL-IP>:11434
+#   OLLAMA_CONCURRENCY=4            # worker only; must equal OLLAMA_NUM_PARALLEL below
+#
+# Before applying, check the three CHANGE-ME lines:
+#   1. the GPU type (nodeSelector) must exist in your cluster/region;
+#      Standard clusters need a GPU node pool, e.g.:
+#        gcloud container node-pools create gpu-l4 --cluster <cluster> --region <region> \
+#          --machine-type g2-standard-8 --accelerator type=nvidia-l4,count=1,gpu-driver-version=latest \
+#          --num-nodes 1
+#      Autopilot provisions the node from the nodeSelector + GPU limit on its own.
+#   2. loadBalancerSourceRanges: the VM's internal IP (/32) or its subnet.
+#   3. the Ollama version, if you want something other than what dev runs.
+#
+# Ollama has NO authentication. The Service is an INTERNAL load balancer and
+# only accepts the source ranges below. Never change it to a public LB.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ollama
+  labels:
+    app.kubernetes.io/part-of: command-center
+---
+# Model cache: survives pod restarts so models aren't re-downloaded.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  namespace: ollama
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: ollama
+  labels:
+    app: ollama
+    app.kubernetes.io/part-of: command-center
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate            # the RWO volume can only attach to one pod at a time
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+        app.kubernetes.io/part-of: command-center
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-l4      # CHANGE-ME (1): or nvidia-tesla-t4
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.32.6                    # CHANGE-ME (3): pinned to the dev version
+          # Start the server, make sure both models are present (fast after the
+          # first run: they're on the volume), then hand over to the server.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ollama serve &
+              until ollama list >/dev/null 2>&1; do sleep 1; done
+              ollama pull llama3.2:3b
+              ollama pull nomic-embed-text
+              wait
+          ports:
+            - name: http
+              containerPort: 11434
+              protocol: TCP
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            # Parallel requests per model. GPU memory at num_ctx 4096: ~2.4 GB weights +
+            # ~0.45 GB KV cache per slot (+0.35 GB embed model), so 4 slots ≈ 4.6 GB.
+            # Fits a T4 (16 GB) or L4 (24 GB) with room to raise it later.
+            # Keep the worker's OLLAMA_CONCURRENCY equal to this.
+            - name: OLLAMA_NUM_PARALLEL
+              value: "4"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "2"              # chat model + nomic-embed-text, no eviction between them
+            - name: OLLAMA_KEEP_ALIVE
+              value: "30m"
+            - name: OLLAMA_MODELS
+              value: /models
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              memory: 16Gi
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          # Ready only once both models are pulled, so the Service never routes to a
+          # pod that would answer "model not found".
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "ollama list | grep -q nomic-embed-text && ollama list | grep -q 'llama3.2:3b'"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 6
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: ollama
+  labels:
+    app: ollama
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+      protocol: TCP
+  loadBalancerSourceRanges:
+    - 10.0.0.0/8              # CHANGE-ME (2): narrow to the VM's internal IP, e.g. 10.128.0.5/32

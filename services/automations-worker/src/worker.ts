@@ -4,6 +4,7 @@ import * as activities from "./activities/index.js";
 import { startCallbackServer } from "./callback-server.js";
 import { getTemporalDataConverter } from "./temporal-data-converter.js";
 import { TASK_QUEUES } from "./workflows/task-queues.js";
+import { OLLAMA_CONCURRENCY } from "./ollama.js";
 
 async function main() {
   const address = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
@@ -27,13 +28,13 @@ async function main() {
   });
 
   // P1.0c: activity-only workers, one per external API (routing lives in
-  // workflows/task-queues.ts). Same process, so the Ollama mutex still covers all.
+  // workflows/task-queues.ts). Same process, so the Ollama slot limit still covers all.
   const apiWorker = (queue: string, limits: { maxTaskQueueActivitiesPerSecond?: number; maxConcurrentActivityTaskExecutions?: number }) =>
     Worker.create({ connection, namespace, taskQueue: queue, activities, dataConverter, ...limits });
   const apiWorkers = await Promise.all([
     apiWorker(TASK_QUEUES.google, { maxTaskQueueActivitiesPerSecond: 1, maxConcurrentActivityTaskExecutions: 2 }), // Google is strict
     apiWorker(TASK_QUEUES.jobs, { maxTaskQueueActivitiesPerSecond: 2, maxConcurrentActivityTaskExecutions: 2 }),
-    apiWorker(TASK_QUEUES.ollama, { maxConcurrentActivityTaskExecutions: 1 }),
+    apiWorker(TASK_QUEUES.ollama, { maxConcurrentActivityTaskExecutions: OLLAMA_CONCURRENCY }),
   ]);
 
   // Callback server: CC posts approval decisions here.
