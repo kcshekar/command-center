@@ -2,6 +2,7 @@ import { Client, Connection, ScheduleOverlapPolicy } from "@temporalio/client";
 
 // Idempotent: creates the org-wide SYSTEM schedules if missing, updates them
 // if present (pause state is preserved). Run once after deploying; safe to re-run.
+// New schedules are always created PAUSED — turn each on from the Control room.
 //
 // Per-user automations (morning brief, evening wrap, inbox triage, calendar
 // sync, news, jobs, profile, learning) are no longer created here: turning an
@@ -87,8 +88,7 @@ async function main() {
     timezone: scheduleTimezone,
   });
 
-  // N14 weekly dependency security scan — Monday 09:30 IST. Created PAUSED:
-  // turn it on from the Control room when you want it running.
+  // N14 weekly dependency security scan — Monday 09:30 IST.
   await upsertSchedule(client, {
     scheduleId: "n14-security-weekly",
     cron: "30 9 * * 1",
@@ -97,7 +97,6 @@ async function main() {
     taskQueue,
     policies: commonPolicies,
     timezone: scheduleTimezone,
-    pausedOnCreate: true,
   });
 
   await connection.close();
@@ -105,7 +104,7 @@ async function main() {
 
 async function upsertSchedule(
   client: Client,
-  s: { scheduleId: string; cron: string; workflowType: string; args: unknown[]; taskQueue: string; policies: any; timezone: string; pausedOnCreate?: boolean }
+  s: { scheduleId: string; cron: string; workflowType: string; args: unknown[]; taskQueue: string; policies: any; timezone: string }
 ) {
   const action = { type: "startWorkflow" as const, workflowType: s.workflowType, args: s.args, taskQueue: s.taskQueue };
   const spec = { cronExpressions: [s.cron], timezoneName: s.timezone };
@@ -115,7 +114,7 @@ async function upsertSchedule(
       action,
       spec,
       policies: s.policies,
-      ...(s.pausedOnCreate ? { state: { paused: true, note: "created paused — turn on from the Control room" } } : {}),
+      state: { paused: true, note: "created paused — turn on from the Control room" },
     });
     console.log(`created schedule ${s.scheduleId} (${s.timezone})`);
   } catch (err) {
