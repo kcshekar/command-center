@@ -135,8 +135,10 @@ export const integrationRoutes = {
     }),
   },
 
-  // N13 — keyword search over the owner's knowledge items (generated tsv +
+  // N13 + P1.2 — keyword search over the owner's knowledge items (generated tsv +
   // GIN index, migration 0031); websearch syntax tolerates any meeting title.
+  // Optional type filter (comma-separated); body (capped) is returned for RAG prompts. Vector
+  // ranking + RRF join this once local embeddings land (P2.0).
   "/api/integrations/knowledge-items/search": {
     GET: serviceTokenRoute(async (req, ctx) => {
       requireScope(ctx, "knowledge:read");
@@ -144,11 +146,13 @@ export const integrationRoutes = {
       const q = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
       const n = Number(url.searchParams.get("limit") ?? 3);
       const limit = Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), 1), 10) : 3;
+      const types = (url.searchParams.get("type") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 10);
       if (!q) return Response.json([]);
       return Response.json(await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
-        SELECT id, type, title, to_char(created_at, 'YYYY-MM-DD') AS "createdOn"
+        SELECT id, type, title, source, left(body, 2000) AS body, to_char(created_at, 'YYYY-MM-DD') AS "createdOn"
         FROM knowledge_items
         WHERE tsv @@ websearch_to_tsquery('english', ${q})
+          AND (${types.length === 0} OR type = ANY(${textArrayLiteral(types)}::text[]))
         ORDER BY ts_rank(tsv, websearch_to_tsquery('english', ${q})) DESC, created_at DESC
         LIMIT ${limit}
       `));
@@ -256,6 +260,33 @@ export const integrationRoutes = {
                 from_place = EXCLUDED.from_place, to_place = EXCLUDED.to_place,
                 depart_at = EXCLUDED.depart_at, end_at = EXCLUDED.end_at
           RETURNING id
+        `;
+        return r;
+      });
+      return Response.json(row, { status: 201 });
+    }),
+  },
+  // P1.0 — DLQ for external API failures. One open row per (owner, automation,
+  // item_type, source_id); a repeat failure bumps attempts and refreshes the error.
+  "/api/integrations/failed-items": {
+    POST: serviceTokenRoute(async (req, ctx) => {
+      requireScope(ctx, "failures:write");
+      const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      const t = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
+      const automationId = t(b.automationId, 40), itemType = t(b.itemType, 40);
+      if (!automationId || !itemType) throw new HttpError(400, "automationId and itemType are required");
+      if (b.payload === undefined) throw new HttpError(400, "payload is required");
+      const retryAfter = typeof b.retryAfter === "string" && !Number.isNaN(Date.parse(b.retryAfter)) ? new Date(b.retryAfter) : null;
+      const row = await asOwner(ctx, typeof b.userId === "string" ? b.userId : null, async (tx) => {
+        const [r] = await tx`
+          INSERT INTO failed_items (org_id, owner_user_id, automation_id, item_type, source_id, payload, error_code, error_message, retry_after)
+          VALUES (${ctx.orgId}, ${b.userId}, ${automationId}, ${itemType}, ${t(b.sourceId, 300) ?? ""},
+                  ${JSON.stringify(b.payload)}::text::jsonb, ${t(b.errorCode, 40)}, ${t(b.errorMessage, 500)}, ${retryAfter})
+          ON CONFLICT (owner_user_id, automation_id, item_type, source_id) WHERE resolved_at IS NULL DO UPDATE
+            SET attempts = failed_items.attempts + 1, payload = EXCLUDED.payload,
+                error_code = EXCLUDED.error_code, error_message = EXCLUDED.error_message,
+                retry_after = EXCLUDED.retry_after, failed_at = now()
+          RETURNING id, attempts
         `;
         return r;
       });

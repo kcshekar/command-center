@@ -1,8 +1,8 @@
-import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
 // N8 — weekly learning check (catalog n8.learncheck, Friday 19:00 IST).
-const { buildLearningCheck } = proxyActivities<typeof activities>({
+const { buildLearningCheck } = routedActivities({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 2 },
 });

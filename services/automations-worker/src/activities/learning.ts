@@ -1,6 +1,7 @@
 import { cc } from "../cc-client.js";
 import { fetchGithubReleases, fetchDevToTagArticles, fetchRssFeed, type LearningCandidate } from "../learning-sources.js";
 import { ollamaJson, ollamaText } from "../ollama.js";
+import { recordExternalFailure } from "../dlq.js";
 
 const LEARNING_ALERT_ROUTE = process.env.LEARNING_ALERT_ROUTE_KEY ?? "automations.digest";
 
@@ -111,6 +112,10 @@ export async function ingestLearningReleases(input: {
       }
     } catch (err) {
       console.warn("[a8.learning] fetcher failed", { kind: g.sourceKind, target: g.target, err: String(err) });
+      await recordExternalFailure({
+        userId: input.userId, automationId: "a8.learning", itemType: "learning_feed",
+        sourceId: `${g.sourceKind}:${g.target}`, payload: { sourceKind: g.sourceKind, target: g.target, sinceIso, perRepo }, err,
+      });
     }
   }
 

@@ -1,7 +1,8 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
-const { prepareTtdReminders } = wf.proxyActivities<typeof activities>({
+const { prepareTtdReminders } = routedActivities({
   startToCloseTimeout: "90 seconds",
   retry: { maximumAttempts: 3, initialInterval: "10s" },
 });

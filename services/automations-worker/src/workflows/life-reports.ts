@@ -1,8 +1,8 @@
-import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
 // Life tracker reports (catalog r11.habits, r7.groceries, r9.vehicle).
-const { buildHabitCheckin, buildGroceryList, buildVehicleReport } = proxyActivities<typeof activities>({
+const { buildHabitCheckin, buildGroceryList, buildVehicleReport } = routedActivities({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 2 },
 });

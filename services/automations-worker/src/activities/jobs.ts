@@ -4,6 +4,8 @@ import {
   type JobCandidate,
 } from "../job-sources.js";
 import { ollamaJson, ollamaText } from "../ollama.js";
+import { recordExternalFailure } from "../dlq.js";
+import { knowledgeBlock, type KnowledgeSnippet } from "./knowledge-rag.js";
 
 const JOBS_ALERT_ROUTE = process.env.JOBS_ALERT_ROUTE_KEY ?? "automations.digest";
 
@@ -54,6 +56,7 @@ async function scoreJobForProfile(input: {
   userId: string;
   profile: NonNullable<Awaited<ReturnType<typeof cc.getUserProfile>>>;
   lead: JobCandidate & { currency: string | null };
+  knowledge?: KnowledgeSnippet[];
 }): Promise<{ score: number; reason?: string }> {
   const prompt = (await cc.getEffectivePrompt("job_scorer", input.userId))?.body
     ?? DEFAULT_JOB_SCORER_PROMPT;
@@ -74,7 +77,9 @@ min_salary: ${input.profile.minSalaryLpa ?? "—"} ${input.profile.currency}
 skills: ${input.profile.skills.join(", ")}
 keywords: ${input.profile.keywords.join(", ")}
 bio: ${input.profile.bio ?? "—"}
-
+${input.knowledge?.length ? `
+${knowledgeBlock(input.knowledge)}
+` : ""}
 Job:
 title: ${input.lead.title}
 company: ${input.lead.company ?? "—"}
@@ -116,6 +121,7 @@ export async function ingestAdzunaJobs(input: {
   country?: string;
   resultsPerPage?: number;
   classify?: boolean;
+  knowledge?: KnowledgeSnippet[];   // P1.4: retrieved by the workflow from /brain
 }): Promise<{
   status: IngestStatus; fetched: number; stored: number; scored: number; failed: number;
   keywords?: string; country?: string;
@@ -167,13 +173,22 @@ export async function ingestAdzunaJobs(input: {
   const candidates: JobCandidate[] = [];
   const sourcesTried: string[] = [];
   const sourceErrors: Record<string, string> = {};
+  // A failed source search is dead-lettered with the query, so it can be replayed.
+  const sourceFailed = (source: string, err: unknown) => {
+    sourceErrors[source] = String(err).slice(0, 120);
+    return recordExternalFailure({
+      userId: input.userId, automationId: "a2.jobs", itemType: "job_search",
+      sourceId: `${source}:${country}:${what}:${where}`,
+      payload: { source, country, what, where, salaryMin, resultsPerPage: perPage }, err,
+    });
+  };
 
   try {
     sourcesTried.push("adzuna");
     const r = await fetchAdzunaJobs({ appId, appKey: cred.key, country, what, where, salaryMin, resultsPerPage: perPage });
     candidates.push(...r);
   } catch (err) {
-    sourceErrors["adzuna"] = String(err).slice(0, 120);
+    await sourceFailed("adzuna", err);
   }
 
   const serpCred = await cc.getUserCredential(input.userId, "serpapi").catch(() => null);
@@ -183,7 +198,7 @@ export async function ingestAdzunaJobs(input: {
       const r = await fetchSerpApiJobs({ apiKey: serpCred.key, what, where, country, resultsPerPage: perPage });
       candidates.push(...r);
     } catch (err) {
-      sourceErrors["serpapi"] = String(err).slice(0, 120);
+      await sourceFailed("serpapi", err);
     }
   }
 
@@ -194,7 +209,7 @@ export async function ingestAdzunaJobs(input: {
       const r = await fetchJSearchJobs({ apiKey: jsearchCred.key, what, where, country, resultsPerPage: perPage });
       candidates.push(...r);
     } catch (err) {
-      sourceErrors["jsearch"] = String(err).slice(0, 120);
+      await sourceFailed("jsearch", err);
     }
   }
 
@@ -249,6 +264,7 @@ export async function ingestAdzunaJobs(input: {
         const result = await scoreJobForProfile({
           userId: input.userId, profile,
           lead: { ...c, currency },
+          knowledge: input.knowledge,
         });
         await cc.scoreJobLead(leadId, {
           userId: input.userId,

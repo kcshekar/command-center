@@ -1,5 +1,6 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
 const {
   fetchGmailMessageFull,
@@ -7,7 +8,7 @@ const {
   sendGmailReply,
   postApprovalNotification,
   updateApprovalNotification,
-} = wf.proxyActivities<typeof activities>({
+} = routedActivities({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 2 },
 });

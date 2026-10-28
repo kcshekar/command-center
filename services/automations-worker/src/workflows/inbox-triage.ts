@@ -1,5 +1,6 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 import { mailReplyWorkflow } from "./mail-reply.js";
 import { isTravelBooking } from "../parsers/travel.js";
 
@@ -17,7 +18,7 @@ const {
   logReplyNeeded,
   ingestInterviewSchedulingEmail,
   ingestTravelBookingEmail,
-} = wf.proxyActivities<typeof activities>({
+} = routedActivities({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 3 },
 });

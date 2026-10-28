@@ -15,6 +15,7 @@
     "schedules:init": "tsx --env-file=.env src/scripts/init-schedules.ts",
     "schedules:delete": "tsx --env-file=.env src/scripts/delete-schedule.ts",
     "tokens:init": "tsx --env-file=.env src/scripts/init-worker-identity.ts",
+    "codec-server": "tsx --env-file=.env src/codec-server.ts",
     "typecheck": "tsc --noEmit -p .",
     "inventory": "tsx src/scripts/prod-inventory.ts"
   },

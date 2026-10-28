@@ -1,7 +1,13 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
-const { ingestAdzunaJobs, draftAndPostJobsDigest } = wf.proxyActivities<typeof activities>({
+const { retrieveKnowledgeContext } = routedActivities({
+  startToCloseTimeout: "30 seconds",
+  retry: { maximumAttempts: 2 },
+});
+
+const { ingestAdzunaJobs, draftAndPostJobsDigest } = routedActivities({
   // Fetch + upsert + sequential LLM scores + digest draft on local Ollama.
   startToCloseTimeout: "8 minutes",
   retry: { maximumAttempts: 2, initialInterval: "15s" },
@@ -21,11 +27,20 @@ export async function jobsIngestWorkflow(input: {
   keywords?: string; country?: string;
   drafted: boolean; briefId?: string; skippedReason?: string;
 }> {
+  // P1.4 — the user's own profile/resume/notes from /brain sharpen the scorer.
+  const knowledge = input.classify === false ? [] : await retrieveKnowledgeContext({
+    userId: input.userId,
+    query: "tech stack skills experience resume summary projects background profile",
+    types: ["profile", "resume", "note"],
+    limit: 5,
+  });
+
   const r = await ingestAdzunaJobs({
     userId: input.userId,
     country: input.country,
     resultsPerPage: input.resultsPerPage,
     classify: input.classify,
+    knowledge,
   });
 
   if (input.draft === false || input.classify === false || r.leads.length === 0) {

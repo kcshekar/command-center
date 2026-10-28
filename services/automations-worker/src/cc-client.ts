@@ -34,6 +34,7 @@ const ALL_SCOPES = [
   "interviews:read",
   "interviews:write",
   "events:write",
+  "failures:write",
 ] as const;
 
 async function call<T = unknown>(path: string, init?: RequestInit, retryOn401 = true): Promise<T> {
@@ -288,10 +289,16 @@ export const cc = {
       `/api/integrations/travel/departing?userId=${encodeURIComponent(userId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
     ),
 
-  // N13 — keyword search over the user's knowledge items.
-  searchKnowledgeItems: (userId: string, q: string, limit = 3) =>
-    call<Array<{ id: string; type: string; title: string; createdOn: string }>>(
-      `/api/integrations/knowledge-items/search?userId=${encodeURIComponent(userId)}&q=${encodeURIComponent(q)}&limit=${limit}`
+  // P1.0 — dead-letter an external API failure (upsert on the open row).
+  recordFailedItem: (body: {
+    userId: string; automationId: string; itemType: string; sourceId?: string;
+    payload: unknown; errorCode?: string; errorMessage?: string; retryAfter?: string;
+  }) => call<{ id: string; attempts: number }>(`/api/integrations/failed-items`, { method: "POST", body: JSON.stringify(body) }),
+
+  // N13 / P1.3 — keyword search over the user's knowledge items (websearch syntax).
+  searchKnowledgeItems: (userId: string, q: string, limit = 3, type?: string) =>
+    call<Array<{ id: string; type: string; title: string; source: string; body: string | null; createdOn: string }>>(
+      `/api/integrations/knowledge-items/search?userId=${encodeURIComponent(userId)}&q=${encodeURIComponent(q)}&limit=${limit}${type ? `&type=${encodeURIComponent(type)}` : ""}`
     ),
 
   // R11 / R7 / R9 — life trackers.

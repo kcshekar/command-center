@@ -42,13 +42,13 @@ rm -rf apps/web/.next
 bun run build:web
 (cd "$WORKER" && pnpm build)
 
-step "Back up both databases"
-bun run db:backup
-DB_URL="$(grep -E '^DATABASE_URL=' .env | head -1 | cut -d= -f2-)"
-AUTOMATIONS_URL="$(DB_URL="$DB_URL" bun -e 'const u = new URL(process.env.DB_URL); u.pathname = "/automations"; console.log(u.href)')"
-mkdir -p backups
-pg_dump --format=custom --no-owner --no-privileges \
-  --file="backups/automations_$(date -u +%Y%m%d_%H%M%S).dump" "$AUTOMATIONS_URL"
+# step "Back up both databases"
+# bun run db:backup
+# DB_URL="$(grep -E '^DATABASE_URL=' .env | head -1 | cut -d= -f2-)"
+# AUTOMATIONS_URL="$(DB_URL="$DB_URL" bun -e 'const u = new URL(process.env.DB_URL); u.pathname = "/automations"; console.log(u.href)')"
+# mkdir -p backups
+# pg_dump --format=custom --no-owner --no-privileges \
+#   --file="backups/automations_$(date -u +%Y%m%d_%H%M%S).dump" "$AUTOMATIONS_URL"
 
 step "Migrate"
 bun run migrate

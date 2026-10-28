@@ -69,8 +69,8 @@ Everything in this section is already built, tested and **live in prod** (prod s
   A reminder on a shared business bill is visible only to its creator.
 
 ### Corrections to the rest of this doc
-- **Migrations are not run on API startup.** Run `bun run migrate` (CC) and `pnpm migrate` (worker). Numbers 0051–0067 are **taken**
-  (0067 = P0.3 cron stagger); the next free number is **0068** (P1.0's `failed_items` must use 0068+).
+- **Migrations are not run on API startup.** Run `bun run migrate` (CC) and `pnpm migrate` (worker). Numbers 0051–0068 are **taken**
+  (0067 = P0.3 cron stagger, 0068 = P1.0 `failed_items`); the next free number is **0069**.
 - The `google-auth-library` type error in §8 is **fixed** (the worker typecheck is clean).
 - Web dev: `cd apps/web && API_ORIGIN=http://localhost:3001 bun run dev` (bun, not pnpm). API: `API_PORT=3001 bun --env-file=.env apps/api/index.ts` from the repo root.
 - Working rules: `docs/user-tech-flow.md` (no hallucination, confirm risky actions, zero-SSH, BYOK).
@@ -238,6 +238,38 @@ the TS SDK silently ignores; the SDK field is `spec.timezone`. Fixed in `automat
 ---
 
 ## 3. Phase 1 — Knowledge Base + DLQ (~3 weeks, after Phase 0)
+
+**Status (2026-10-28): built and tested in dev; not yet in prod.** What actually shipped (the specs below are the original plan):
+- **P1.0 DLQ:** migration 0068 (`failed_items`, owner RLS, one open row per owner/automation/item_type/source_id; repeats bump
+  `attempts`), `POST /api/integrations/failed-items` (scope `failures:write`, granted to all worker clients in 0068),
+  worker `src/dlq.ts`. Only transient external failures are recorded (408/429/5xx, network); a 401/404 stays a log line.
+  Wired into A2 (Adzuna/SerpAPI/JSearch per-source catches) and A8 (learning fetchers now throw on 429/5xx).
+  N14's OSV calls already fail the run loudly, so they're not dead-lettered. No UI yet (Phase 3 /health).
+- **P1.0b codec server:** `pnpm codec-server` (node:http, no Express), binds 127.0.0.1:8081, CORS from `CODEC_CORS_ORIGINS`.
+  Run it on your own machine with the DEK of the env you're inspecting; dev UI is `http://chandu-h110:8080`.
+- **P1.0c task queues:** `src/workflows/task-queues.ts` routes activities by name (`routedActivities()` replaces
+  `proxyActivities` in every workflow). `worker.ts` runs activity-only workers for `google-api` (1/s), `external-jobs-api`
+  (2/s) and `ollama-local` (concurrency 1) in the same process, so the Ollama mutex still covers all queues.
+- **P1.1:** `/vault` is the **Password Vault**; `/knowledge` was already labelled "Command Vault", so no rename.
+  New `/brain` page (search, type filter, add, edit, delete) on the existing `/api/knowledge-items` routes; `resume` added to KNOWN_TYPES.
+- **P1.2 (decision 2026-10-28):** full-text only. The existing integration search gained a comma-separated `type` filter,
+  `source` and capped `body`; vector arm + RRF move to P2.0 with local embeddings. SQL runs in ~0.3 ms on dev.
+- **P1.3:** `activities/knowledge-rag.ts` (`retrieveKnowledgeContext`, terms OR-ed; `knowledgeBlock` fences items as data).
+- **P1.4:** A2 retrieves profile/resume/note items once per run and injects them into the job scorer prompt. A11 (the
+  "Automater" in the roadmap is the deterministic upgrade scan) quotes the user's own lesson/note that names a package
+  next to that upgrade. It needs `PLATFORM_OWNER_USER_ID` in the worker `.env` (unset = step skipped) + `pnpm schedules:init`.
+
+**Phase 1 prod rollout (user runs on the VM):**
+1. `./scripts/deploy.sh` (CC migration 0068 runs before the worker restarts, so the new scope exists when the worker mints).
+2. Worker `.env`: `PLATFORM_OWNER_USER_ID=<your CC user id>`, then `cd services/automations-worker && pnpm schedules:init`.
+3. Add 5–10 items on `/brain`: profile, tech stack, resume summary, 2–3 lessons (e.g. upgrades that bit you).
+
+**Phase 1 DoD:**
+- [x] /brain page exists and shows knowledge_items with search
+- [x] Command Vault (kb_commands) stays at /knowledge; /vault is the Password Vault (rename dropped)
+- [x] Search query <200ms (0.3 ms SQL on dev). Note: every dev CC API call takes ~1–4 s end to end regardless of endpoint; not search-specific.
+- [x] A2 job scoring Ollama prompt includes user profile context
+- [x] Upgrade scan reads the user's lesson items before posting
 
 ### P1.0 — Dead Letter Queue for External API Failures
 **New migration:** `apps/api/migrations/0068_failed_items.sql` (0067 is taken by the P0.3 cron stagger)

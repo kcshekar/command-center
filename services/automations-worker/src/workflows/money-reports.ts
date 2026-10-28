@@ -1,10 +1,10 @@
-import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
 // Tier 1 money + document reports. Scheduled per user from the catalog
 // (r13.subs, n9.bills, r10.budget, r2.docs); all I/O lives in activities.
 const { buildSubscriptionsReport, buildBillForecast, buildBudgetReport, buildDocumentExpiryReport, buildNetWorthReport } =
-  proxyActivities<typeof activities>({
+  routedActivities({
     startToCloseTimeout: "2 minutes",
     retry: { maximumAttempts: 2 },
   });

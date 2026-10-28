@@ -1,8 +1,8 @@
-import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
 // R14 — trip pack (catalog r14.travel, hourly; trips 23–24h out).
-const { buildTripPack } = proxyActivities<typeof activities>({
+const { buildTripPack } = routedActivities({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 2 },
 });

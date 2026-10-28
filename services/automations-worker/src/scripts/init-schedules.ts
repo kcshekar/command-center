@@ -82,7 +82,8 @@ async function main() {
     scheduleId: "a11-upgrader-monthly",
     cron: "0 11 1 * *",
     workflowType: "platformUpgradeScanWorkflow",
-    args: [{ routeKey: process.env.PLATFORM_UPGRADE_ROUTE_KEY ?? digest }],
+    // userId: whose /brain lessons the scan checks (P1.4); unset = skip that step.
+    args: [{ routeKey: process.env.PLATFORM_UPGRADE_ROUTE_KEY ?? digest, userId: process.env.PLATFORM_OWNER_USER_ID || undefined }],
     taskQueue,
     policies: commonPolicies,
     timezone: scheduleTimezone,

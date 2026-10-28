@@ -29,6 +29,7 @@ export { buildMeetingPrep } from "./meeting-prep.js";
 export { ingestTravelBookingEmail, buildTripPack } from "./travel.js";
 export { prepareCaBatches, sendPreparedCaBatch } from "./ca-invoices.js";
 export { scanDependencyVulns } from "./security-scan.js";
+export { retrieveKnowledgeContext } from "./knowledge-rag.js";
 
 // ─── Google reads ────────────────────────────────────────────────────────────
 

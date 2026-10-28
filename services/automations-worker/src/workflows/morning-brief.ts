@@ -1,19 +1,19 @@
-import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
 const {
   fetchCalendarEvents,
   fetchGoogleTasks,
   fetchCCDueReminders,
   postNotification,
-} = proxyActivities<typeof activities>({
+} = routedActivities({
   startToCloseTimeout: "1 minute",
   retry: { maximumAttempts: 3 },
 });
 
 // N15 weather + R15 line: optional extras that already return null on any
 // failure, so one attempt — a retry would only delay the brief.
-const { fetchWeatherBrief, draftAffirmation } = proxyActivities<typeof activities>({
+const { fetchWeatherBrief, draftAffirmation } = routedActivities({
   startToCloseTimeout: "1 minute",
   retry: { maximumAttempts: 1 },
 });

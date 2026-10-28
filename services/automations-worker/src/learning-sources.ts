@@ -26,7 +26,8 @@ export async function fetchGithubReleases(repo: string, sinceIso: string, perRep
     headers: { "Accept": "application/vnd.github+json", "User-Agent": "memoryAllocator-a8" },
   });
   if (!res.ok) {
-    // 404 / rate-limit / network — skip this repo, don't fail the sweep.
+    // 404 and other permanent errors: skip this repo, don't fail the sweep.
+    if (res.status === 429 || res.status >= 500) throw new Error(`github ${res.status}`); // retryable → caller dead-letters it
     console.warn(`[a8.learning] github releases ${repo} → ${res.status}`);
     return [];
   }
@@ -63,6 +64,7 @@ export async function fetchDevToTagArticles(tag: string, sinceIso: string, perTa
   const url = `https://dev.to/api/articles?tag=${encodeURIComponent(tag)}&top=7&per_page=${perTag}`;
   const res = await fetch(url, { headers: { "Accept": "application/json" } });
   if (!res.ok) {
+    if (res.status === 429 || res.status >= 500) throw new Error(`devto ${res.status}`); // retryable → caller dead-letters it
     console.warn(`[a8.learning] dev.to ${tag} → ${res.status}`);
     return [];
   }
@@ -99,6 +101,7 @@ export async function fetchDevToTagArticles(tag: string, sinceIso: string, perTa
 export async function fetchRssFeed(feedUrl: string, sinceIso: string, perFeed = 10): Promise<LearningCandidate[]> {
   const res = await fetch(feedUrl, { headers: { "Accept": "application/rss+xml, application/atom+xml, */*" } });
   if (!res.ok) {
+    if (res.status === 429 || res.status >= 500) throw new Error(`rss ${res.status}`); // retryable → caller dead-letters it
     console.warn(`[a8.learning] rss ${feedUrl} → ${res.status}`);
     return [];
   }

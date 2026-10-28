@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { cc } from "../cc-client.js";
+import { retrieveKnowledgeContext } from "./knowledge-rag.js";
 
 // A11 — monthly dep upgrade scan.
 //
@@ -74,6 +75,7 @@ async function fetchLatest(pkg: string): Promise<string | null> {
 export async function scanRepoDepUpgrades(input: {
   routeKey?: string;
   rootDir?: string;
+  userId?: string;   // P1.4: whose /brain lessons to check (system schedule: PLATFORM_OWNER_USER_ID)
 } = {}): Promise<{
   packageJsons: number;
   depsExamined: number;
@@ -135,14 +137,25 @@ export async function scanRepoDepUpgrades(input: {
   // Slack summary — compact, top 15.
   const dayTag = new Date().toISOString().slice(0, 10);
   const top = upgrades.slice(0, 15);
+
+  // P1.4 — a lesson the user saved about a package ("zod 4 broke shadcn forms")
+  // gets quoted next to that upgrade, so the scan doesn't re-propose it blind.
+  // Only lessons the user wrote: A8's auto-ingested release notes mention
+  // half the ecosystem and would flag everything.
+  const lessons = input.userId
+    ? await retrieveKnowledgeContext({ userId: input.userId, query: top.map((d) => d.pkg).join(" "), types: ["lesson", "note"], limit: 10 })
+    : [];
+  const lessonFor = (pkg: string) => lessons.find((l) => l.source === "user" && `${l.title} ${l.body ?? ""}`.toLowerCase().includes(pkg.toLowerCase()));
   const header = `🧰 *A11 Upgrade scan — ${dayTag}*\n\n` +
     `Scanned ${pkgFiles.length} package.json file(s), ${all.length} unique deps.\n` +
     `Upgrades available: ${upgrades.length} (major ${major} · minor ${minor} · patch ${patch})`;
   const body = top.length === 0
     ? "\n\nEverything is on latest. Nothing to review."
-    : "\n\n*Top " + top.length + ":*\n" + top.map((d) =>
-        `• [${d.bump.padEnd(5)}] *${d.pkg}* ${d.currentPinned ?? d.current} → ${d.latest} _(${d.scope} in ${d.packageJsonPath})_`
-      ).join("\n");
+    : "\n\n*Top " + top.length + ":*\n" + top.map((d) => {
+        const lesson = lessonFor(d.pkg);
+        return `• [${d.bump.padEnd(5)}] *${d.pkg}* ${d.currentPinned ?? d.current} → ${d.latest} _(${d.scope} in ${d.packageJsonPath})_` +
+          (lesson ? `\n    ⚠ your note: ${lesson.title}` : "");
+      }).join("\n");
   const footer = upgrades.length > top.length
     ? `\n\n_+${upgrades.length - top.length} more upgrades hidden._`
     : "";

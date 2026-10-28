@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
-  Bell, BellRing, BookOpen, Bot, Briefcase, Car, CheckCircle2, Circle, Gift, GraduationCap, Inbox, Key, KeyRound, Lock, Plane, ShoppingCart,
+  Bell, BellRing, BookOpen, Bot, Brain, Briefcase, Car, CheckCircle2, Circle, Gift, GraduationCap, Inbox, Key, KeyRound, Lock, Plane, ShoppingCart,
   MessageSquare, Settings2, Smartphone, Sun, Tag, Terminal, UserCircle, Users, Wallet, Zap,
 } from "lucide-react";
 import { automationsApi, type CatalogRow } from "@/lib/automations-api";
@@ -37,6 +37,7 @@ const STATIC_ITEMS: NavItem[] = [
   { href: "/inbox", label: "Inbox", icon: Inbox, area: null },
   { href: "/automations", label: "Automations", icon: Zap, area: null },
   { href: "/finance", label: "Finance", icon: Wallet, area: "money" },
+  { href: "/brain", label: "Brain", icon: Brain, area: "knowledge" },
   { href: "/knowledge", label: "Command Vault", icon: Terminal, area: "knowledge" },
   { href: "/reminders", label: "Reminders", icon: BellRing, area: "life" },
   { href: "/secrets", label: "Secrets", icon: KeyRound, area: "system" },

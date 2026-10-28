@@ -1,7 +1,8 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
-const { openGithubPrFromKnowledgeItem } = wf.proxyActivities<typeof activities>({
+const { openGithubPrFromKnowledgeItem } = routedActivities({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 2, initialInterval: "15s" },
 });

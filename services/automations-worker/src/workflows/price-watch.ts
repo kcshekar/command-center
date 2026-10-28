@@ -1,7 +1,8 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
-const { fetchInitialPriceSnapshot, listDuePriceWatches } = wf.proxyActivities<typeof activities>({
+const { fetchInitialPriceSnapshot, listDuePriceWatches } = routedActivities({
   startToCloseTimeout: "45 seconds",
   retry: { maximumAttempts: 3, initialInterval: "5s" },
 });

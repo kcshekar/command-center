@@ -1,7 +1,8 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
-const { ingestLearningReleases, draftAndPostLearningDigest } = wf.proxyActivities<typeof activities>({
+const { ingestLearningReleases, draftAndPostLearningDigest } = routedActivities({
   // Classify + draft each hit Ollama; weekly digest can span many lessons.
   startToCloseTimeout: "6 minutes",
   retry: { maximumAttempts: 2, initialInterval: "15s" },

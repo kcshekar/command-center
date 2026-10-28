@@ -1,7 +1,8 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
-const { ingestHnTopStories, draftAndPostNewsBrief } = wf.proxyActivities<typeof activities>({
+const { ingestHnTopStories, draftAndPostNewsBrief } = routedActivities({
   // Classification + draft each run through Ollama; budget headroom.
   startToCloseTimeout: "5 minutes",
   retry: { maximumAttempts: 2, initialInterval: "15s" },

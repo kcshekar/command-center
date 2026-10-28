@@ -1,5 +1,6 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 import { caBatchCard, type PreparedBatch } from "../ca-card.js";
 import { submitApproval } from "./inbox-triage.js";
 
@@ -8,11 +9,11 @@ import { submitApproval } from "./inbox-triage.js";
 // that waits for Approve / Hold, so one slow decision never blocks the next
 // month (same shape as inbox triage's trash approval).
 
-const { prepareCaBatches, postNotification } = wf.proxyActivities<typeof activities>({
+const { prepareCaBatches, postNotification } = routedActivities({
   startToCloseTimeout: "5 minutes", // local model drafts one cover email per project
   retry: { maximumAttempts: 2 },
 });
-const { sendPreparedCaBatch, postApprovalNotification, updateApprovalNotification } = wf.proxyActivities<typeof activities>({
+const { sendPreparedCaBatch, postApprovalNotification, updateApprovalNotification } = routedActivities({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 1 }, // never risk emailing the CA twice
 });

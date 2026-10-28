@@ -22,7 +22,7 @@ const TEMPORAL_TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE ?? "personal-automat
 
 const KNOWN_TYPES = new Set([
   "note", "journal", "brief", "news", "profile",
-  "job", "job_lead", "prep", "lesson", "snippet",
+  "job", "job_lead", "prep", "lesson", "snippet", "resume",
 ]);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -148,8 +148,8 @@ export const knowledgeItemRoutes = {
       const type = url.searchParams.get("type");
       const limit = Math.max(1, Math.min(50, Number(url.searchParams.get("limit") ?? 20)));
 
-      // plainto_tsquery handles multi-word queries safely without us parsing
-      // operators. Switch to websearch_to_tsquery later if we want quoted phrases.
+      // websearch_to_tsquery: never throws on user input, and supports
+      // "quoted phrases", `or` and -exclusions in the /brain search box.
       const rows = await ctx.tx`
         SELECT id,
                user_id          AS "userId",
@@ -160,9 +160,9 @@ export const knowledgeItemRoutes = {
                metadata,
                created_at       AS "createdAt",
                updated_at       AS "updatedAt",
-               ts_rank(tsv, plainto_tsquery('english', ${q})) AS rank
+               ts_rank(tsv, websearch_to_tsquery('english', ${q})) AS rank
         FROM knowledge_items
-        WHERE tsv @@ plainto_tsquery('english', ${q})
+        WHERE tsv @@ websearch_to_tsquery('english', ${q})
           AND (${type}::text IS NULL OR type = ${type})
         ORDER BY rank DESC, updated_at DESC
         LIMIT ${limit}

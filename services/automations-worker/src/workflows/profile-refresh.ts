@@ -1,7 +1,8 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
-const { refreshProfileDrafts } = wf.proxyActivities<typeof activities>({
+const { refreshProfileDrafts } = routedActivities({
   // One structured LLM call + a couple of CC writes. Local Ollama → budget
   // room for larger responses.
   startToCloseTimeout: "3 minutes",

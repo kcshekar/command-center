@@ -1,7 +1,8 @@
 import * as wf from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
-const { tailorResumeForJobLead } = wf.proxyActivities<typeof activities>({
+const { tailorResumeForJobLead } = routedActivities({
   // One structured LLM call + two knowledge_items writes + optional Gmail draft.
   startToCloseTimeout: "3 minutes",
   retry: { maximumAttempts: 2, initialInterval: "20s" },

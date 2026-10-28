@@ -1,7 +1,7 @@
-import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities/index.js";
+import { routedActivities } from "./task-queues.js";
 
-const { fetchCompletedTasksToday, rolloverOverdueTasks, postNotification } = proxyActivities<typeof activities>({
+const { fetchCompletedTasksToday, rolloverOverdueTasks, postNotification } = routedActivities({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 3 },
 });
