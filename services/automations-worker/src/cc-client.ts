@@ -93,7 +93,8 @@ export const cc = {
       body: JSON.stringify({ routeKey, refs, text, blocks, approvalState }),
     }),
 
-  dueReminders: (days = 7) => call<DueReminder[]>(`/api/integrations/reminders/due?days=${days}`),
+  dueReminders: (days = 7, userId?: string) =>
+    call<DueReminder[]>(`/api/integrations/reminders/due?days=${days}${userId ? `&userId=${encodeURIComponent(userId)}` : ""}`),
 
   upsertExternalAccount: (params: {
     service: string;
@@ -128,6 +129,7 @@ export const cc = {
     externalId: string;
     resourceType?: string;
     resourceId?: string;
+    userId?: string;                          // owner; CC defaults to the token's user
   }) => call<{ id: string; title: string; dueOn: string }>("/api/integrations/reminders", { method: "POST", body: JSON.stringify(params) }),
 
   // A6 Price Watcher — worker reads back the user's own BYOK key (CC owns the

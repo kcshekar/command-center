@@ -93,7 +93,7 @@ export async function inboxTriageWorkflow(input: TriageInput): Promise<{ propose
       }
     } else if (category === "actionable_bill") {
       try {
-        const r = await ingestBillReminder(m.id, { from: m.from, subject: m.subject, snippet: m.snippet });
+        const r = await ingestBillReminder(m.id, { from: m.from, subject: m.subject, snippet: m.snippet }, input.userId);
         if (r.ok) billsIngested++;
       } catch {
         ingestFailed++;

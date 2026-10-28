@@ -161,8 +161,8 @@ export async function classifyEmailOllama(
 
 // ─── Command Center ──────────────────────────────────────────────────────────
 
-export async function fetchCCDueReminders(days = 7): Promise<DueReminder[]> {
-  return cc.dueReminders(days);
+export async function fetchCCDueReminders(days = 7, userId?: string): Promise<DueReminder[]> {
+  return cc.dueReminders(days, userId);
 }
 
 export async function postNotification(routeKey: string, text: string): Promise<void> {
@@ -250,7 +250,8 @@ export async function ingestExpenseFromEmail(
 
 export async function ingestBillReminder(
   messageId: string,
-  email: EmailInput
+  email: EmailInput,
+  userId?: string
 ): Promise<{ ok: boolean }> {
   const bill = await extractBill(email.subject, email.snippet, email.from);
   if (!bill) return { ok: false };
@@ -260,6 +261,7 @@ export async function ingestBillReminder(
     dueOn: bill.dueOn,
     source: "gmail",
     externalId: `bill-${messageId}`,
+    userId,
   });
   return { ok: true };
 }

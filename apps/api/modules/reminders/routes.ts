@@ -43,19 +43,31 @@ const REMINDER_SWEEP_LOCK_CLASS = 726352;
 // pg_try_advisory_xact_lock auto-releases when `tx` commits or rolls back —
 // no unlock bookkeeping, and no risk of a leaked lock from a connection-pool
 // mismatch, since it lives and dies with this exact transaction.
-async function sweepDueReminders(tx: SQL, orgId: string): Promise<number> {
+//
+// Reminders are per-user under RLS (migration 0065), so the sweep switches
+// app.current_user_id to each member in turn, then restores the caller's.
+export async function sweepDueReminders(tx: SQL, orgId: string): Promise<number> {
   const [{ locked }] = await tx`SELECT pg_try_advisory_xact_lock(${REMINDER_SWEEP_LOCK_CLASS}, hashtext(${orgId})) AS locked`;
   if (!locked) return 0; // another sweep for this org is already in flight
 
-  const due = await tx`
-    SELECT id, title, due_on FROM reminders
-    WHERE due_on <= CURRENT_DATE AND (notified_at IS NULL OR notified_at::date < CURRENT_DATE)
-  `;
-  for (const r of due) {
-    await sendSlackMessage(`:bell: Reminder due: *${r.title}* (due ${r.due_on})`, { routeKey: "reminders.due", tx, orgId });
-    await tx`UPDATE reminders SET notified_at = now() WHERE id = ${r.id}`;
+  const [{ caller }] = await tx`SELECT current_setting('app.current_user_id', true) AS caller`;
+  const members = await tx`SELECT id FROM users WHERE org_id = ${orgId}`;
+  let notified = 0;
+  for (const m of members) {
+    await tx`SELECT set_config('app.current_user_id', ${m.id}, true)`;
+    const due = await tx`
+      SELECT id, title, due_on FROM reminders
+      WHERE due_on <= CURRENT_DATE AND (notified_at IS NULL OR notified_at::date < CURRENT_DATE)
+    `;
+    for (const r of due) {
+      await sendSlackMessage(`:bell: Reminder due: *${r.title}* (due ${r.due_on})`, { routeKey: "reminders.due", tx, orgId });
+      await tx`UPDATE reminders SET notified_at = now() WHERE id = ${r.id}`;
+    }
+    notified += due.length;
   }
-  return due.length;
+  // '' would break every later ::uuid cast in this tx, so only restore a real id.
+  if (caller) await tx`SELECT set_config('app.current_user_id', ${caller}, true)`;
+  return notified;
 }
 
 // ponytail: in-process setInterval, not a real job scheduler — misses checks

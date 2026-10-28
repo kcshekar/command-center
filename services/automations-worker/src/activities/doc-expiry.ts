@@ -28,7 +28,7 @@ export function formatExpiry(alerts: ReturnType<typeof alertsFor>): string | nul
 export async function buildDocumentExpiryReport(input: { userId: string; routeKey: string; date?: string }) {
   const today = input.date ?? todayIn();
   // The reminders due endpoint covers up to 60 days ahead and includes overdue.
-  const text = formatExpiry(alertsFor(await cc.dueReminders(60), today));
+  const text = formatExpiry(alertsFor(await cc.dueReminders(60, input.userId), today));
   if (!text) {
     console.log("[r2.docs] nothing expiring on a milestone today");
     return { posted: false };

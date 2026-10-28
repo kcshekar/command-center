@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@google-cloud/storage':
-        specifier: ^8.0.1
+        specifier: ^8.4.0
         version: 8.4.0
       '@slack/socket-mode':
         specifier: ^2.0.4
@@ -21,15 +21,11 @@ importers:
         specifier: ^1.11.0
         version: 1.24.0
       nodemailer:
-        specifier: ^9.0.5
-        version: 9.1.1
+        specifier: ^10.1.4
+        version: 10.1.7
       puppeteer-core:
-        specifier: ^25.9.0
+        specifier: ^25.14.0
         version: 25.14.0
-    devDependencies:
-      '@types/nodemailer':
-        specifier: ^8.0.1
-        version: 8.0.2
 
 packages:
 
@@ -134,9 +130,6 @@ packages:
 
   '@types/node@26.6.5':
     resolution: {integrity: sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==}
-
-  '@types/nodemailer@8.0.2':
-    resolution: {integrity: sha512-c7M5ox8p0nEOfbJ2E9Qcmt8/QCu/VzsiAhzBiZbvky2PhKZDHpKB3sQHBM5MEZNkCfBOaS6S9//AGPRTNB7IaA==}
 
   '@types/retry@0.12.0':
     resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
@@ -468,9 +461,9 @@ packages:
     resolution: {integrity: sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
 
-  nodemailer@9.1.1:
-    resolution: {integrity: sha512-izw9mVKFix6YSnC9eLgV6g1opl9DUlRio9ZNcq+Wu9Ujn2UwF+8Nl0B8nz22kEC+CTZCvinkxwJ0DeFbb6NwcQ==}
-    engines: {node: '>=6.0.0'}
+  nodemailer@10.1.7:
+    resolution: {integrity: sha512-OQa6FDln5fLttmqSbjDiRYvFDOFNrBqfiOwHPlEbURil3b+vPB1v8xpi+Sp46drzNDlsTnNsS502vthmz56r4w==}
+    engines: {node: '>=20.0.0'}
 
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
@@ -781,10 +774,6 @@ snapshots:
   '@types/node@26.6.5':
     dependencies:
       undici-types: 8.9.0
-
-  '@types/nodemailer@8.0.2':
-    dependencies:
-      '@types/node': 26.6.5
 
   '@types/retry@0.12.0': {}
 
@@ -1119,7 +1108,7 @@ snapshots:
       fetch-blob: 3.2.0
       formdata-polyfill: 4.0.10
 
-  nodemailer@9.1.1: {}
+  nodemailer@10.1.7: {}
 
   once@1.4.0:
     dependencies:

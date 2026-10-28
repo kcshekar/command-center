@@ -505,22 +505,25 @@ export const integrationRoutes = {
   "/api/integrations/reminders": {
     POST: serviceTokenRoute(async (req, ctx) => {
       requireScope(ctx, "reminders:write");
-      const { title, category, dueOn, recurrence, source, externalId, resourceType, resourceId } = await req.json();
+      const { title, category, dueOn, recurrence, source, externalId, resourceType, resourceId, userId } = await req.json();
       if (!title?.trim() || !category || !dueOn || !source || !externalId) {
         throw new HttpError(400, "title, category, dueOn, source, externalId are required");
       }
       if (!REMINDER_CATEGORIES.has(category)) throw new HttpError(400, "invalid category");
 
-      const [row] = await ctx.tx`
+      // Reminders are per-user (RLS on created_by): insert as the schedule's
+      // user when given, else as the token's user.
+      const owner = userId ?? ctx.userId;
+      const [row] = await asOwner<any[]>(ctx, owner, (tx) => tx`
         INSERT INTO reminders (org_id, title, category, resource_type, resource_id, due_on, recurrence, created_by, source, external_id)
         VALUES (${ctx.orgId}, ${title.trim()}, ${category}, ${resourceType ?? null}, ${resourceId ?? null},
-                ${dueOn}, ${recurrence ?? null}, ${ctx.userId}, ${source}, ${externalId})
+                ${dueOn}, ${recurrence ?? null}, ${owner}, ${source}, ${externalId})
         ON CONFLICT (org_id, source, external_id) WHERE source IS NOT NULL AND external_id IS NOT NULL
         DO UPDATE SET
           title = EXCLUDED.title, category = EXCLUDED.category,
           due_on = EXCLUDED.due_on, recurrence = EXCLUDED.recurrence
         RETURNING id, title, due_on
-      `;
+      `);
       await writeAudit(ctx.tx, ctx, {
         action: "reminder:create_via_integration",
         resourceType: "reminder",
@@ -599,14 +602,16 @@ export const integrationRoutes = {
   "/api/integrations/reminders/due": {
     GET: serviceTokenRoute(async (req, ctx) => {
       requireScope(ctx, "reminders:read");
-      const days = Math.max(1, Math.min(60, Number(new URL(req.url).searchParams.get("days") ?? 7)));
-      const rows = await ctx.tx`
+      const params = new URL(req.url).searchParams;
+      const days = Math.max(1, Math.min(60, Number(params.get("days") ?? 7)));
+      // Per-user (RLS): the schedule's user when given, else the token's user.
+      const rows = await asOwner(ctx, params.get("userId") ?? ctx.userId, (tx) => tx`
         SELECT id, title, category, due_on, recurrence, notified_at, resource_type, resource_id
         FROM reminders
         WHERE org_id = ${ctx.orgId}
           AND due_on <= (CURRENT_DATE + (${days}::int * INTERVAL '1 day'))
         ORDER BY due_on ASC
-      `;
+      `);
       return Response.json(rows);
     }),
   },

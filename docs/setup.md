@@ -260,13 +260,18 @@ Add triage later (`pnpm schedules:init -- you@gmail.com` without the flag) once 
 ## Routine update (every deploy)
 
 ```bash
-ssh <cc-vm>
 cd ~/command-center
+PREV=$(git rev-parse HEAD)
 git pull --ff-only
-git diff HEAD~ HEAD -- .env.example services/automations-worker/.env.example
+git diff $PREV HEAD -- .env.example services/automations-worker/.env.example
 # add any new required env vars
 
+# Read-only snapshot: versions, missing env NAMES, pending migrations,
+# Temporal schedules, Ollama/Chrome reachability. Changes nothing.
+(cd services/automations-worker && pnpm install --frozen-lockfile && pnpm inventory)
+
 # CC
+bun run db:backup
 bun install --frozen-lockfile
 bun run migrate
 bun run build:web

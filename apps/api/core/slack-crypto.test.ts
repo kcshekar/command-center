@@ -13,6 +13,7 @@ test("encrypts and decrypts slack tokens accurately", () => {
 });
 
 test("masks slack tokens for API display", () => {
-  expect(maskToken("1234567890")).toBe("xoxb-123...6789");
+  expect(maskToken("xoxb-1234567890-abcd6789")).toBe("xoxb-123...6789");
+  expect(maskToken("1234567890")).toBe("********"); // under 12 chars: nothing revealed
   expect(maskToken("short")).toBe("********");
 });

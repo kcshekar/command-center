@@ -30,7 +30,7 @@ export async function morningBriefWorkflow(input: MorningBriefInput): Promise<vo
   const [events, tasks, dueReminders, weather] = await Promise.all([
     fetchCalendarEvents(input.userEmail, 24),
     fetchGoogleTasks(input.userEmail),
-    fetchCCDueReminders(7),
+    fetchCCDueReminders(7, input.userId),
     input.userId ? fetchWeatherBrief(input.userId) : Promise.resolve(null),
   ]);
   const note = await draftAffirmation({ weekday: WEEKDAYS[new Date().getDay()], eventCount: events.length });
