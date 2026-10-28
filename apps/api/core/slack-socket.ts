@@ -48,7 +48,17 @@ export async function startSlackSockets(): Promise<void> {
     const key = row.id as string;
     if (active.has(key)) continue;
 
-    const appToken = decryptSlackToken(row.encrypted_app_token as unknown as Buffer, row.app_token_iv as unknown as Buffer);
+    // One undecryptable row (encrypted under a different SLACK_ENCRYPTION_SECRET)
+    // must not stop every other connection from starting.
+    let appToken: string;
+    try {
+      appToken = decryptSlackToken(row.encrypted_app_token as unknown as Buffer, row.app_token_iv as unknown as Buffer);
+    } catch (err) {
+      log.error("slack connection token undecryptable — re-add it in Notifications", {
+        connectionId: key, orgId: row.org_id, err: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
     const client = new SocketModeClient({ appToken });
 
     client.on("interactive", async ({ ack, body }: any) => {

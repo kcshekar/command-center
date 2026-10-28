@@ -5,6 +5,7 @@ import { requireRole } from "../../core/rbac";
 import { writeAudit } from "../../core/audit";
 import { HttpError } from "../../core/auth";
 import { sendSlackMessage } from "../../core/slack";
+import { log } from "../../core/log";
 
 // Advances due_on past every occurrence up to and including today, so
 // acknowledging a reminder that's weeks overdue jumps straight to the next
@@ -76,13 +77,19 @@ export async function sweepDueReminders(tx: SQL, orgId: string): Promise<number>
 // or guarantee delivery through restarts. Multiple instances running this
 // interval concurrently is now safe either way, via the advisory lock above.
 export function startReminderSweepInterval(intervalMs = 60 * 60 * 1000) {
+  // A throw inside a setInterval callback is an unhandled rejection, which
+  // exits the whole API process — so log per org and carry on instead.
   return setInterval(async () => {
-    const orgs = await sql`SELECT id FROM organizations`;
-    for (const org of orgs) {
-      await sql.begin(async (tx) => {
-        await tx`SELECT set_config('app.current_org_id', ${org.id}, true)`;
-        await sweepDueReminders(tx, org.id);
-      });
+    try {
+      const orgs = await sql`SELECT id FROM organizations`;
+      for (const org of orgs) {
+        await sql.begin(async (tx) => {
+          await tx`SELECT set_config('app.current_org_id', ${org.id}, true)`;
+          await sweepDueReminders(tx, org.id);
+        }).catch((err) => log.error("reminder sweep failed", { orgId: org.id, err: err instanceof Error ? err.message : String(err) }));
+      }
+    } catch (err) {
+      log.error("reminder sweep failed", { err: err instanceof Error ? err.message : String(err) });
     }
   }, intervalMs);
 }

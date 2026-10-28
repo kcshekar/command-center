@@ -14,7 +14,8 @@ async function main() {
     connection,
     namespace,
     taskQueue,
-    workflowsPath: new URL("./workflows/index.ts", import.meta.url).pathname,
+    // .ts under tsx (src/), .js once built (dist/, `pnpm start`)
+    workflowsPath: new URL(`./workflows/index.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).pathname,
     activities,
   });
 
