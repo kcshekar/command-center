@@ -31,8 +31,10 @@ const W_REQUIRED = [
   "OLLAMA_HOST", "OLLAMA_MODEL", "WORKER_CALLBACK_PORT", "WORKER_CALLBACK_TOKEN",
 ];
 
+// Runs in the worker dir: it declares packageManager pnpm. Run from the repo
+// root, corepack would auto-pin pnpm into the root (bun) package.json.
 const sh = (cmd: string) => {
-  try { return execSync(cmd, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
+  try { return execSync(cmd, { cwd: worker, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
   catch { return "not found"; }
 };
 
