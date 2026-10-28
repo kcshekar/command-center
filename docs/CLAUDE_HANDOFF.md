@@ -69,8 +69,8 @@ Everything in this section is already built, tested and **live in prod** (prod s
   A reminder on a shared business bill is visible only to its creator.
 
 ### Corrections to the rest of this doc
-- **Migrations are not run on API startup.** Run `bun run migrate` (CC) and `pnpm migrate` (worker). Numbers 0051–0066 are **taken**;
-  the next free number is **0067** (P1.0's `failed_items` must use 0067+).
+- **Migrations are not run on API startup.** Run `bun run migrate` (CC) and `pnpm migrate` (worker). Numbers 0051–0067 are **taken**
+  (0067 = P0.3 cron stagger); the next free number is **0068** (P1.0's `failed_items` must use 0068+).
 - The `google-auth-library` type error in §8 is **fixed** (the worker typecheck is clean).
 - Web dev: `cd apps/web && API_ORIGIN=http://localhost:3001 bun run dev` (bun, not pnpm). API: `API_PORT=3001 bun --env-file=.env apps/api/index.ts` from the repo root.
 - Working rules: `docs/user-tech-flow.md` (no hallucination, confirm risky actions, zero-SSH, BYOK).
@@ -128,14 +128,14 @@ These were read directly on 2026-10-28. Use these as your ground truth:
 - CREATE: `services/automations-worker/src/encryption-codec.ts`
   - Implements `PayloadCodec` interface from `@temporalio/common`
   - Uses `crypto.subtle` (Node.js WebCrypto) for AES-GCM encrypt/decrypt
-  - Key sourced from `process.env.TEMPORAL_PAYLOAD_DEK` (32-byte base64)
+  - Key sourced from `process.env.TEMPORAL_PAYLOAD_DEK` (32-byte hex)
 - CREATE: `services/automations-worker/src/temporal-data-converter.ts`
   - Returns `DefaultDataConverter` with `payloadCodecs: [new EncryptionCodec()]`
 - MODIFY: `services/automations-worker/src/worker.ts`
   - Add `dataConverter: await getTemporalDataConverter()` to `Worker.create()`
 - ADD to `services/automations-worker/.env`:
   ```
-  TEMPORAL_PAYLOAD_DEK=<run: openssl rand -base64 32>
+  TEMPORAL_PAYLOAD_DEK=<run: openssl rand -hex 32>
   ```
 
 **IMPORTANT:** Both the Temporal Worker AND any Temporal Client that starts workflows must use the same DataConverter.
@@ -211,22 +211,36 @@ JSON:`;
 // Same pattern for extractExpense() and extractBill()
 ```
 
-**Phase 0 Definition of Done:**
-- [ ] `Temporal Web UI` shows `binary/encrypted` (not plain text) for workflow history payloads
-- [ ] `TEMPORAL_PAYLOAD_DEK` env var set in worker `.env`
-- [ ] `classifyEmail` / `extractExpense` / `extractBill` all use `_mutex.runExclusive()`
-- [ ] All Ollama calls have `num_predict` cap
-- [ ] `OLLAMA_KEEP_ALIVE=30m` in env
-- [ ] `worker.ts` has `maxTaskQueueActivitiesPerSecond: 2`
-- [ ] Cron schedules are staggered (not all firing simultaneously)
-- [ ] XML delimiters in all 3 email extraction prompts
+**Phase 0 Definition of Done** (done in dev 2026-10-28; prod pending the deploy steps below):
+- [x] `Temporal Web UI` shows `binary/encrypted` (not plain text) for workflow history payloads (verified by the user)
+- [x] `TEMPORAL_PAYLOAD_DEK` env var set in worker `.env` (64 hex chars, `openssl rand -hex 32`; codec rejects anything else)
+- [x] `classifyEmail` / `extractExpense` / `extractBill` all use `_mutex.runExclusive()`
+- [x] All Ollama calls have `num_predict` cap (150 classify/extract, 500 text, 1536 other JSON). One fixed `num_ctx` = 4096: changing it per call forces an Ollama model reload.
+- [x] `OLLAMA_KEEP_ALIVE=30m` in env (daemon var: must also be set on the Ollama pod)
+- [x] `worker.ts` has `maxTaskQueueActivitiesPerSecond: 2`
+- [x] Cron schedules are staggered (CC migration 0067 + system crons in `init-schedules.ts`)
+- [x] XML delimiters in all 3 email extraction prompts (planted `<email>` tags are stripped)
+
+Self-check: `cd services/automations-worker && pnpm exec tsx src/scripts/check-phase0.ts`.
+
+**Fixed alongside P0.3:** every schedule was firing in **UTC**. The code passed `timezoneName` (the proto name), which
+the TS SDK silently ignores; the SDK field is `spec.timezone`. Fixed in `automation-schedules.ts` and `init-schedules.ts`.
+
+**Phase 0 prod rollout (user runs on the VM):**
+1. Add `TEMPORAL_PAYLOAD_DEK=<openssl rand -hex 32>` to the prod worker `.env` **before** deploying. The worker refuses
+   to start without it. Keep it forever: losing it makes encrypted history unreadable.
+2. `./scripts/deploy.sh` (applies CC migration 0067).
+3. `bun --env-file=.env apps/api/scripts/resync-schedule-crons.ts` (add `--dry-run` first): pushes catalog crons +
+   IST timezone onto existing per-user schedules. Pause state is untouched.
+4. `cd services/automations-worker && pnpm schedules:init`: same for the system schedules.
+5. On the Ollama pod: `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_KEEP_ALIVE=30m`.
 
 ---
 
 ## 3. Phase 1 — Knowledge Base + DLQ (~3 weeks, after Phase 0)
 
 ### P1.0 — Dead Letter Queue for External API Failures
-**New migration:** `apps/api/migrations/0067_failed_items.sql` (0051 is taken — use the next free number)
+**New migration:** `apps/api/migrations/0068_failed_items.sql` (0067 is taken by the P0.3 cron stagger)
 ```sql
 CREATE TABLE failed_items (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

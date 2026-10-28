@@ -8,7 +8,7 @@ export function getPilgrimIdentitiesDek(): string {
   const dek = process.env.PILGRIM_IDENTITIES_DEK;
   if (!dek) {
     throw new Error(
-      "PILGRIM_IDENTITIES_DEK must be set — generate with `openssl rand -base64 32` and add to apps/api/.env"
+      "PILGRIM_IDENTITIES_DEK must be set — generate with `openssl rand -hex 32` and add to apps/api/.env"
     );
   }
   return dek;

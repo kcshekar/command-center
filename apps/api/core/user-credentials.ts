@@ -8,7 +8,7 @@ export function getUserCredentialsDek(): string {
   const dek = process.env.USER_CREDENTIALS_DEK;
   if (!dek) {
     throw new Error(
-      "USER_CREDENTIALS_DEK must be set — generate with `openssl rand -base64 32` and add to apps/api/.env"
+      "USER_CREDENTIALS_DEK must be set — generate with `openssl rand -hex 32` and add to apps/api/.env"
     );
   }
   return dek;

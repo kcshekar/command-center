@@ -14,6 +14,12 @@ importers:
       '@temporalio/client':
         specifier: ^1.11.0
         version: 1.24.0
+      '@temporalio/common':
+        specifier: 1.24.0
+        version: 1.24.0
+      '@temporalio/proto':
+        specifier: 1.24.0
+        version: 1.24.0
       '@temporalio/worker':
         specifier: ^1.11.0
         version: 1.24.0

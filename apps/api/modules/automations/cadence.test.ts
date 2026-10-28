@@ -8,6 +8,7 @@ const cal = (c: object) => ({ calendars: [{ dayOfMonth: [r(1, 31)], dayOfWeek: a
 
 test("formatCadence renders every schedule shape init-schedules creates", () => {
   expect(formatCadence(cal({ minute: [r(0, 59, 15)], hour: [r(0, 23)] }))).toBe("Every 15 min");
+  expect(formatCadence(cal({ minute: [r(2, 59, 15)], hour: [r(0, 23)] }))).toBe("Every 15 min from :02");
   expect(formatCadence(cal({ minute: [r(0)], hour: [r(0, 23)] }))).toBe("Hourly");
   expect(formatCadence(cal({ minute: [r(0)], hour: [r(0, 23, 6)] }))).toBe("Every 6h");
   expect(formatCadence(cal({ minute: [r(30)], hour: [r(7)] }))).toBe("Daily at 07:30");
@@ -23,6 +24,10 @@ test("formatCadence renders every schedule shape init-schedules creates", () => 
 
 test("cronCadence agrees with formatCadence for the catalog's cron strings", () => {
   expect(cronCadence("*/15 * * * *")).toBe("Every 15 min");
+  expect(cronCadence("2-59/15 * * * *")).toBe("Every 15 min from :02");
+  expect(cronCadence("8-59/30 * * * *")).toBe("Every 30 min from :08");
+  expect(cronCadence("23 * * * *")).toBe("Hourly at :23");
+  expect(cronCadence("35 */6 * * *")).toBe("Every 6h");
   expect(cronCadence("0 * * * *")).toBe("Hourly");
   expect(cronCadence("0 */6 * * *")).toBe("Every 6h");
   expect(cronCadence("30 7 * * *")).toBe("Daily at 07:30");

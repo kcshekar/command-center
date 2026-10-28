@@ -86,7 +86,7 @@ export async function reconcileGrantSchedules(p: {
   const note = p.enabled ? "enabled via CC grant" : "disabled via CC grant";
   for (const [scheduleId, args] of desired) {
     const action = { type: "startWorkflow" as const, workflowType: p.template.workflowType, args: [args], taskQueue };
-    const spec = { cronExpressions: [p.template.cron], timezoneName };
+    const spec = { cronExpressions: [p.template.cron], timezone: timezoneName };
     if (!existing.has(scheduleId)) {
       await client.schedule.create({
         scheduleId,

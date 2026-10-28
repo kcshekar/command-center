@@ -18,13 +18,13 @@
 1. Create `services/automations-worker/src/encryption-codec.ts` implementing `PayloadCodec` interface using AES-GCM via Node.js `crypto.subtle` (WebCrypto API). Reuse AES helpers from existing `crypto.ts` if compatible, otherwise use `webcrypto`.
 2. Create `services/automations-worker/src/temporal-data-converter.ts` that instantiates `EncryptionCodec` with `TEMPORAL_PAYLOAD_DEK` env var and returns a `DefaultDataConverter` with `payloadCodecs: [codec]`.
 3. Modify `services/automations-worker/src/worker.ts`: add `dataConverter: await getTemporalDataConverter()` to `Worker.create()`.
-4. Add `TEMPORAL_PAYLOAD_DEK=<32-byte base64 secret>` to `services/automations-worker/.env` (generate with `openssl rand -base64 32`).
+4. Add `TEMPORAL_PAYLOAD_DEK=<32-byte hex secret>` to `services/automations-worker/.env` (generate with `openssl rand -hex 32`).
 5. **Optional but recommended:** Create a Codec Server Express app on port 8081 with `/encode` and `/decode` endpoints so Temporal UI can decrypt payloads during debugging.
 
 **Key constraint:** Both the Temporal Client (when starting workflows from API) AND the Worker must use the same DataConverter. If the API ever starts workflows directly, it also needs this converter.
 
 **Env vars added:**
-- `TEMPORAL_PAYLOAD_DEK` — 32-byte AES-GCM key (base64 encoded)
+- `TEMPORAL_PAYLOAD_DEK` — 32-byte AES-GCM key (hex encoded)
 
 ---
 

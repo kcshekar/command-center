@@ -19,8 +19,10 @@ export interface CadenceSpec {
 const single = (r?: Range[]) => (r && r.length === 1 && r[0].start === r[0].end ? r[0].start : null);
 const full = (r: Range[] | undefined, lo: number, hi: number) =>
   !r || r.length === 0 || (r.length === 1 && r[0].start === lo && r[0].end === hi && (r[0].step ?? 1) === 1);
+// Also matches offset steps ("2-59/15" → start 2), which P0.3 uses to keep
+// frequent schedules off the :00/:30 slots the daily ones fire on.
 const stepOver = (r: Range[] | undefined, lo: number, hi: number) =>
-  r && r.length === 1 && r[0].start === lo && r[0].end === hi && (r[0].step ?? 1) > 1 ? r[0].step! : null;
+  r && r.length === 1 && r[0].start - lo < (r[0].step ?? 1) && r[0].end === hi && (r[0].step ?? 1) > 1 ? r[0].step! : null;
 const pad = (n: number) => String(n).padStart(2, "0");
 
 export function formatCadence(spec: CadenceSpec): string {
@@ -44,7 +46,10 @@ export function formatCadence(spec: CadenceSpec): string {
   const hourStep = stepOver(cal.hour, 0, 23);
 
   let when: string | null = null;
-  if (minuteStep && full(cal.hour, 0, 23)) when = `Every ${minuteStep} min`;
+  if (minuteStep && full(cal.hour, 0, 23)) {
+    const from = cal.minute![0].start;
+    when = from === 0 ? `Every ${minuteStep} min` : `Every ${minuteStep} min from :${pad(from)}`;
+  }
   else if (m !== null && full(cal.hour, 0, 23)) when = m === 0 ? "Hourly" : `Hourly at :${pad(m)}`;
   else if (m !== null && hourStep) when = `Every ${hourStep}h`;
   else if (m !== null && h !== null) when = `${pad(h)}:${pad(m)}`;
@@ -70,8 +75,8 @@ const DOW = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "
 
 function parseField(f: string, lo: number, hi: number): Range[] | null {
   if (f === "*") return [{ start: lo, end: hi, step: 1 }];
-  const step = f.match(/^\*\/(\d+)$/);
-  if (step) return [{ start: lo, end: hi, step: Number(step[1]) }];
+  const step = f.match(/^(?:\*|(\d+)-(\d+))\/(\d+)$/);
+  if (step) return [{ start: step[1] ? Number(step[1]) : lo, end: step[2] ? Number(step[2]) : hi, step: Number(step[3]) }];
   const out: Range[] = [];
   for (const part of f.split(",")) {
     const m = part.match(/^(\d+)(?:-(\d+))?$/);

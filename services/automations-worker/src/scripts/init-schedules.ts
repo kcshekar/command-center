@@ -43,7 +43,7 @@ async function main() {
   // release is imminent and Slacks the pilgrim pack.
   await upsertSchedule(client, {
     scheduleId: "ttd-prep-every-6h",
-    cron: "0 */6 * * *",
+    cron: "35 */6 * * *", // P0.3: off the :00/:30 slots (see CC migration 0067)
     workflowType: "ttdPrepWorkflow",
     args: [{}],
     taskQueue,
@@ -56,7 +56,7 @@ async function main() {
   // endpoint using each user's own BYOK key. Silently skips users without one.
   await upsertSchedule(client, {
     scheduleId: "knowledge-embedder-hourly",
-    cron: "0 * * * *",
+    cron: "44 * * * *", // P0.3 stagger
     workflowType: "knowledgeEmbedderWorkflow",
     args: [{ limit: 20 }],
     taskQueue,
@@ -68,7 +68,7 @@ async function main() {
   // (one Slack message per round, max once per 24h via metadata.notifiedAt).
   await upsertSchedule(client, {
     scheduleId: "a4-interview-reminders-15m",
-    cron: "*/15 * * * *",
+    cron: "11-59/15 * * * *", // P0.3: a5.mail runs at :02/:17/:32/:47
     workflowType: "interviewRemindersWorkflow",
     args: [{ withinHours: 24, renotifyHours: 24, routeKey: process.env.INTERVIEW_ALERT_ROUTE_KEY ?? digest }],
     taskQueue,
@@ -107,7 +107,7 @@ async function upsertSchedule(
   s: { scheduleId: string; cron: string; workflowType: string; args: unknown[]; taskQueue: string; policies: any; timezone: string }
 ) {
   const action = { type: "startWorkflow" as const, workflowType: s.workflowType, args: s.args, taskQueue: s.taskQueue };
-  const spec = { cronExpressions: [s.cron], timezoneName: s.timezone };
+  const spec = { cronExpressions: [s.cron], timezone: s.timezone }; // SDK field is `timezone`; `timezoneName` (the proto name) is silently ignored
   try {
     await client.schedule.create({
       scheduleId: s.scheduleId,

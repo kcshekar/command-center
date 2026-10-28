@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { Connection, Client } from "@temporalio/client";
 import { google } from "googleapis";
 import { oauthClient, saveTokens } from "./google-oauth.js";
+import { getTemporalDataConverter } from "./temporal-data-converter.js";
 import { pool } from "./db.js";
 import { evictIdentityCache, evictTokenCache } from "./cc-token-store.js";
 import { verifyOAuthState } from "./crypto.js";
@@ -28,7 +29,7 @@ export async function startCallbackServer(): Promise<void> {
   const address = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
   const namespace = process.env.TEMPORAL_NAMESPACE ?? "personal";
   const connection = await Connection.connect({ address });
-  const temporal = new Client({ connection, namespace });
+  const temporal = new Client({ connection, namespace, dataConverter: await getTemporalDataConverter() });
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
