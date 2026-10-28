@@ -136,8 +136,8 @@ Secrets and Vault are **zero-knowledge**: the browser derives a workspace key fr
 
 Two options wired up in this repo:
 
-- **VM + pm2** — build locally, `git pull` on the VM, `bun run build:web && pm2 reload all`. See `package.json` for `start:cc_*` scripts.
-- **GKE** — see `infrastructure/k8s/` (kustomize base + dev/staging/production overlays) and `.github/workflows/deploy.yml`. Push to `main` → staging; publish a Release → production. Requires GCP secrets set up per that workflow.
+- **VM + pm2 (current prod)** — on the VM run `./scripts/deploy.sh` (pull → install → build → back up both DBs → migrate → `pm2 restart` → `pnpm inventory`). Runbook: `docs/setup.md`. Handoff/state for new sessions: `docs/CLAUDE_HANDOFF.md`.
+- **GKE (not in use; `deploy.yml` triggers on a `develop` branch that doesn't exist)** — see `infrastructure/k8s/` (kustomize base + dev/staging/production overlays) and `.github/workflows/deploy.yml`. Push to `main` → staging; publish a Release → production. Requires GCP secrets set up per that workflow.
 
 ---
 

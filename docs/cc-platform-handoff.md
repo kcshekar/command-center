@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: d4606e29-c3ca-4d2f-a3fb-48b6abf6d49f
-  modified: 2026-10-25T19:54:12.931Z
+  modified: 2026-10-28T12:00:00.000Z
 ---
 
 # Command Center (CC) — platform handoff
@@ -16,9 +16,9 @@ Personal automation platform for the user. Everything runs locally against Tempo
 Monorepo at `/Users/chandrashekar/Documents/Workspace/personal/memoryAllocator`.
 - `apps/api/` — Bun + Bun.SQL, port **3001**. REST surface. Multi-tenant via RLS using `withTenantTx` setting `app.current_org_id` and `app.current_user_id`.
 - `apps/web/` — Next.js, port **3000**. Hits `/api/*` through a Next rewrite so the session cookie flows. **Not standard Next** — `apps/web/AGENTS.md` says to consult `node_modules/next/dist/docs/` first (the file is a stub pre-prompt-injection warning; leave it).
-- `services/automations-worker/` — Node 22 + Temporal + pnpm. Hosts workflow + activity code. Also runs a callback-server on port **3005** for OAuth popups and health routes.
+- `services/automations-worker/` — Node 22+ (prod on 24 LTS) + Temporal + pnpm 9.12. Hosts workflow + activity code. Also runs a callback-server on port **3005** (OAuth popups; `/callback/*` + `/admin/*` are localhost-only for CC). Prod runs the build (`pnpm start`); dev uses `pnpm worker` (tsx watch).
 - Postgres with pgvector 0.8.2 (HNSW cosine, 1536-dim). pgcrypto for `pgp_sym_encrypt` secret storage.
-- Temporal is remote (address + namespace in root `.env`); schedules created from `services/automations-worker/src/scripts/init-schedules.ts`.
+- Temporal is remote (address + namespace in **both** `.env` files — CC creates per-user schedules when an automation is turned on). Org-wide system schedules come from `services/automations-worker/src/scripts/init-schedules.ts` (always created paused).
 
 ## Secrets model
 - Root `.env` holds shared config (TEMPORAL_*, DB url, DEKs).
@@ -31,7 +31,7 @@ Monorepo at `/Users/chandrashekar/Documents/Workspace/personal/memoryAllocator`.
 ## Core patterns to reuse (do not reinvent)
 1. **Tenant transactions** — any API route reading per-user data wraps the query in `withTenantTx(userId, orgId, async (sql) => …)` which `SET LOCAL`s the two GUCs so RLS policies work.
 2. **SECURITY DEFINER functions** for cross-tenant worker reads (price-watch, ttd, interview-rounds due, unembedded-knowledge, learning sources). Pattern: migration adds a function that takes `org_id` + optional limit, the worker calls it via a service-token-authed endpoint, no RLS juggle.
-3. **Service tokens with scopes** — worker-side bots authenticate as a service token with narrow scopes (`events:write`, `knowledge:read/write`, `interviews:read/write`, `jobs:read/write`, `prompts:read`, `credentials:read`, `pilgrim:read`, `ttd:read`, `prices:read/write`, `profile:read`, `learning:read`, `slack:send`, `reminders:read/write`, `expenses:write`). Add new scope when a new automation needs an endpoint; wire scope-check middleware in the route.
+3. **Service tokens with scopes** — the worker mints short-lived tokens via its worker client and requests its whole `ALL_SCOPES` list (24 scopes) every time; one scope missing from the client's `allowed_scopes` = 403 on **every** call. New scope ⇒ add it to `ALL_SCOPES` (worker `cc-client.ts`), `ALLOWED_SCOPES` (`apps/api/modules/worker-clients/routes.ts`) and grant it to existing clients in a migration (see 0066); wire `requireScope` in the route.
 4. **SSE channel** at `/api/events` — per-user pub/sub bus. Activities fire `cc.emitEvent({userId, type, payload})` to drive live UI refresh (toasts, list reloads). Web consumes with `useLiveEvents(["event:type"], handler)` from `apps/web/lib/live-events.ts`.
 5. **Temporal workflow + activity split** — activity does the IO (fetch, parse, write), workflow is thin, orchestrates with `startToClose` + 1–2 retries. Schedules created in `init-schedules.ts` with IST timezone via `scheduleTimezone`.
 6. **BYOK with fallback** — activity checks the user's `user_credentials` for the API key; absent → log `[axx.foo] no_key, skipping`, don't crash the schedule tick. Multiple providers (jobs: Adzuna + SerpAPI + JSearch; learning: GitHub + Dev.to + RSS) fan out across whichever keys exist.
@@ -71,11 +71,13 @@ Monorepo at `/Users/chandrashekar/Documents/Workspace/personal/memoryAllocator`.
 - Web: `cd apps/web && pnpm dev`.
 - Worker: `cd services/automations-worker && pnpm worker` (tsx watch; auto-reloads on file edits).
 - Schedules init (system schedules only): `cd services/automations-worker && pnpm schedules:init`.
-- Typecheck: `bunx tsc --noEmit` in each `apps/*`, `npx tsc --noEmit` in the worker. Worker has a **pre-existing** `google-auth-library` resolution error in `google-oauth.ts` — unrelated to A7 work.
+- Typecheck: `bun x tsc --noEmit -p apps/api` / `-p apps/web`, `npx tsc --noEmit` in the worker (all clean as of 2026-10-28).
+- Tests: `bun test apps/api`; worker `npx tsx --test $(find src -name '*.test.ts')`.
+- Migrations (not run on boot): `bun run migrate` (CC), `cd services/automations-worker && pnpm migrate` (worker). Next free CC number: **0067**.
+- Prod update: `./scripts/deploy.sh` on the VM (user runs it); `pnpm inventory` for a read-only snapshot. Setup/runbook: `docs/setup.md`.
 
-## Pending at session close (2026-10-26)
-- A7 GitHub PR writer: wired end-to-end, UI shipped, **not smoke-tested**. User to create GitHub OAuth App, add `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` + `GITHUB_REDIRECT_URI=http://localhost:3005/auth/github/callback` to `services/automations-worker/.env`, restart worker, test from Profile Drafts → README card → Open PR.
-- `apps/web/AGENTS.md`: prompt-injection stub, confirmed by inspection (`node_modules/next/dist/server/lib/generate-agent-files.js` doesn't exist). Decision deferred.
+## Current state
+What's done, what's live in prod, and what's pending: **`docs/CLAUDE_HANDOFF.md` → "Current state — verified 2026-10-28"**. The Tier 1/2 automations (n5, r13, n9, r10, r12, r2, n8, r3, r1, r11, r7, r9, n13, r14, n12, n14) are listed there with their Ollama dependence.
 
 ## Related
 - Working-style rules the user holds you to: [[user-tech-flow]]

@@ -185,11 +185,13 @@ SLACK_ROUTE_APPROVAL=automations.approval
 
 ### 9. nginx proxy for the worker
 
-Add to the server block for `commandcenter.pametnitech.com`, **above** the existing `location /` block:
+Add to the server block for `commandcenter.pametnitech.com`, **above** the existing `location /` block.
+Proxy only the OAuth paths: `/automations` and `/automations/<id>` are Command Center UI pages, and
+the worker's `/callback/*` + `/admin/*` are called by CC over localhost and must not be public.
 
 ```nginx
-location /automations/ {
-    proxy_pass http://127.0.0.1:3005/;
+location /automations/auth/ {
+    proxy_pass http://127.0.0.1:3005/auth/;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -222,7 +224,7 @@ pm2 logs automations-worker --lines 60
 
 Expect `callback server listening on :3005` and `worker ready. namespace=commandcenter queue=personal-automations`.
 
-Verify proxy from your laptop: `curl -i https://commandcenter.pametnitech.com/automations/auth/google/start` → expect 400 "missing ?email=".
+Verify from your laptop: `curl -i https://commandcenter.pametnitech.com/automations/auth/google/start` → expect 401 "invalid or expired state" (from the worker), and `/automations` → the Command Center page.
 
 ### 12. Google authorization
 
@@ -258,6 +260,8 @@ Add triage later (`pnpm schedules:init -- you@gmail.com` without the flag) once 
 ---
 
 ## Routine update (every deploy)
+
+One command on the VM: `./scripts/deploy.sh` (or `bun run deploy`). It refuses a dirty tree, shows `.env.example` changes, builds while the old code serves, backs up both DBs, migrates both, `pm2 restart`s all three processes and ends with `pnpm inventory`. The manual equivalent is below.
 
 ```bash
 cd ~/command-center

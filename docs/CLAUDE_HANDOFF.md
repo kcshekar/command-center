@@ -6,6 +6,77 @@
 
 ---
 
+## Current state — verified 2026-10-28 (read this before §1)
+
+The phased plan below (§2–§5, Phase 0 → 3) is the **next feature work** and has **not started**.
+Everything in this section is already built, tested and **live in prod** (prod sync finished 2026-10-28).
+
+### Done (2026-10-26 → 2026-10-28)
+**Platform**
+- Inbox triage: trash approval runs as an abandoned child workflow; Gmail cursor committed after ingest.
+- Signed OAuth `state` (CC-issued, HMAC over `WORKER_CALLBACK_TOKEN`) binds Google/GitHub consent to the CC user.
+- Approvals settle across Slack + in-app (`settle_in_app_approval`, migration 0044).
+- **Per-user schedules from the catalog** (0045): turning an automation on in `/automations` creates
+  `<automationId>:<userId>[:<email>]` schedules from `automation_catalog.schedule_template`. The per-automation
+  on/off toggle (roadmap "M7"/P3.0b) **already exists** this way. Only org-wide sweeps live in `init-schedules.ts`,
+  and they are always created **paused** (turn on from the dashboard).
+- Finance zones (0046): `owner_user_id` + `zone` (`personal` = owner only, `professional` = org) on accounts/expenses/recurring_bills.
+- **Reminders are per-user** (0065): RLS `created_by = current user`; the hourly sweep visits each member.
+- **Worker client scopes** (0066): the worker requests its whole `ALL_SCOPES` list on every mint, and one missing scope
+  = 403 on every call. Adding a scope means updating **three** places: `ALL_SCOPES` (worker `cc-client.ts`),
+  `ALLOWED_SCOPES` (`apps/api/modules/worker-clients/routes.ts`), and a migration granting it to existing worker clients.
+- UI redesign: catalog-driven nav, `/today`, `/inbox`, `/automations` (+ `/automations/[id]`), Finance Personal/Business,
+  `DESIGN.md` at the repo root.
+
+**Automations added (catalog ids; all no-AI unless noted)**
+| Id | What | Ollama |
+|---|---|---|
+| n5.spend | Daily spend report (21:00) | no |
+| r13.subs / n9.bills / r10.budget / r12.networth | Subscriptions, bill forecast, budgets, net worth | no |
+| r2.docs | Document expiry (reminders category `document`) | no |
+| n8.learncheck | Learning check | no |
+| r3.occasions | Birthdays & anniversaries | gift ideas/drafts (dropped if Ollama fails) |
+| n15 / r15 | Weather + one-line note inside the morning brief | R15 line only (dropped on failure) |
+| r1.sms | Bank SMS logger (`POST /api/integrations/sms`) | fallback only (deterministic parser first) |
+| r11.habits / r7.groceries / r9.vehicle | Habits, groceries, vehicles | no |
+| n13.meetings | Meeting prep (local Postgres full-text search) | no |
+| r14.travel | Trip pack (deterministic detector before triage classify) | yes |
+| n12.ca | Monthly CA invoices → Slack approval → email | cover email draft (API side) |
+| n14.security | Weekly OSV scan, dependency inventory (worker migration 0005) | no |
+
+**Dependencies, tooling and ops**
+- All security fixes applied; majors done (next 16.4.1, nodemailer 10, zod 4, googleapis 186, @google-cloud/storage 8.4).
+- `bunfig.toml` `minimumReleaseAge` = 7 days (supply-chain guard). The worker's pnpm 9.12 has no such guard, so check new packages' publish dates by hand.
+- `pnpm inventory` (worker): read-only prod snapshot (versions, missing env **names**, pending migrations, schedules, Ollama/Chrome).
+- `./scripts/deploy.sh` (or `bun run deploy`): one-command prod update (build → backup both DBs → migrate → `pm2 restart` → inventory).
+- Worker runs built in prod (`pnpm start` = `node dist/worker.js`), not `tsx watch`. Prod VM is on Node 24 LTS; pm2 is a global npm package per nvm version (`nvm reinstall-packages <old>` + `pm2 update` when switching Node).
+- Worker `pnpm migrate` uses `ADMIN_DATABASE_URL`, else the main `.env` `DATABASE_URL`.
+- nginx proxies only `/automations/auth/` to the worker (`/automations` is a CC page).
+
+**Prod (GCP VM, pm2: cc_api :3011, cc_web :3010, automations-worker; Temporal on GKE)**
+- CC migrations through 0066 and worker migrations through 0005 applied. Morning brief verified end-to-end (UI → Temporal → worker → Slack).
+- The user enables automations one at a time in prod. Deploys and VM commands are run **by the user**; never SSH.
+
+### Pending / open
+- **Ollama in prod:** it runs as a pod in another GKE cluster, and the user will set `OLLAMA_HOST` in **both** `.env` files.
+  Until then keep triage (a5.mail, which fails hard without the model), news, jobs, learning, profile, interview prep and r14.travel **off**.
+- **Knowledge embedder is PAUSED** (D4). Re-enable only with local embeddings (P2.0 below); D5 is open.
+  Remind the user at the end of each work summary until it's re-enabled.
+- Not yet exercised in prod: evening wrap, the reminders → Slack sweep, and a Slack approval round-trip (safe test: CA batch → **Hold**).
+- N14 step 2 (auto PRs for minor fixes) needs a GitHub OAuth app (`GITHUB_CLIENT_ID/SECRET`). The A7 PR writer has the same dependency.
+- On hold by the user: Tier 3 automations (N1, N2, N3, N6, N7, N10, N11, R4, R5, R8), N4 (Slack user token), R6 (flights).
+- Known limits: the reminder alert route `reminders.due` is org-wide, so in a multi-user org members see each other's titles.
+  A reminder on a shared business bill is visible only to its creator.
+
+### Corrections to the rest of this doc
+- **Migrations are not run on API startup.** Run `bun run migrate` (CC) and `pnpm migrate` (worker). Numbers 0051–0066 are **taken**;
+  the next free number is **0067** (P1.0's `failed_items` must use 0067+).
+- The `google-auth-library` type error in §8 is **fixed** (the worker typecheck is clean).
+- Web dev: `cd apps/web && API_ORIGIN=http://localhost:3001 bun run dev` (bun, not pnpm). API: `API_PORT=3001 bun --env-file=.env apps/api/index.ts` from the repo root.
+- Working rules: `docs/user-tech-flow.md` (no hallucination, confirm risky actions, zero-SSH, BYOK).
+
+---
+
 ## 0. Before Anything Else — Read These Docs
 
 Load these docs in order before writing a single line of code:
@@ -155,7 +226,7 @@ JSON:`;
 ## 3. Phase 1 — Knowledge Base + DLQ (~3 weeks, after Phase 0)
 
 ### P1.0 — Dead Letter Queue for External API Failures
-**New migration:** `apps/api/migrations/0051_failed_items.sql`
+**New migration:** `apps/api/migrations/0067_failed_items.sql` (0051 is taken — use the next free number)
 ```sql
 CREATE TABLE failed_items (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -234,7 +305,7 @@ See IMPLEMENTATION_ROADMAP.md P2.4.
 
 In order:
 - **P3.0** — Temporal test suite (vitest + `@temporalio/testing`)
-- **P3.0b** — Per-automation enable/disable toggle (M7)
+- **P3.0b** — ~~Per-automation enable/disable toggle (M7)~~ already exists (catalog grants, 0045)
 - **P3.0c** — Dry-run mode (M8)
 - **P3.0d** — DB slow query audit (M6) — one-time SQL, no code change
 - **P3.0e** — Prometheus metrics (M5) — `prom-client` in `callback-server.ts`
@@ -269,7 +340,7 @@ See IMPLEMENTATION_ROADMAP.md for full specs on each.
 cd apps/api && bun --hot --env-file=../../.env index.ts
 
 # Web:
-cd apps/web && pnpm dev
+cd apps/web && API_ORIGIN=http://localhost:3001 bun run dev
 
 # Worker:
 cd services/automations-worker && pnpm worker
@@ -278,8 +349,11 @@ cd services/automations-worker && pnpm worker
 bunx tsc --noEmit          # in apps/api and apps/web
 npx tsc --noEmit           # in services/automations-worker
 
-# DB migrations (run from apps/api):
-# Add migration SQL file as 00NN_name.sql then restart API (Bun auto-runs migrations on startup)
+# DB migrations (NOT run on API startup):
+bun run migrate                                   # CC, from repo root
+cd services/automations-worker && pnpm migrate    # worker DB
+
+# Prod: ./scripts/deploy.sh on the VM (user runs it); pnpm inventory to check
 
 # Temporal schedule init (system schedules only):
 cd services/automations-worker && pnpm schedules:init
@@ -289,7 +363,7 @@ cd services/automations-worker && pnpm schedules:init
 
 ## 8. Known Pre-existing Issues (Do Not Fix Unless Asked)
 
-- `services/automations-worker`: `google-auth-library` TypeScript resolution error in `google-oauth.ts` — pre-existing, unrelated to any Phase 0–3 work. Ignore it.
+- ~~`google-auth-library` type error in `google-oauth.ts`~~ — fixed 2026-10-28 (type now comes from `googleapis`).
 - `apps/web/AGENTS.md`: prompt-injection stub. Leave it as-is.
 - A7 GitHub PR writer is wired but not smoke-tested. Needs `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` in worker `.env`.
 
