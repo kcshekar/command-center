@@ -1,6 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { categoryFor, parseUpiDebit } from "../../core/upi-sms";
-import { extractSmsDebit } from "../../core/ollama";
+import { extractSmsDebit, EMBED_DIM } from "../../core/ollama";
+import { searchKnowledge } from "../knowledge-items/routes";
 import { generateCaBatch, sendCaBatch } from "../finance/ca-batches";
 import { serviceTokenRoute, tenantRoute } from "../../core/router";
 import { writeAudit } from "../../core/audit";
@@ -135,10 +136,10 @@ export const integrationRoutes = {
     }),
   },
 
-  // N13 + P1.2 — keyword search over the owner's knowledge items (generated tsv +
-  // GIN index, migration 0031); websearch syntax tolerates any meeting title.
-  // Optional type filter (comma-separated); body (capped) is returned for RAG prompts. Vector
-  // ranking + RRF join this once local embeddings land (P2.0).
+  // N13 + P1.2 + P2.0 — hybrid search over the owner's knowledge items
+  // (full-text + local-embedding vectors, merged with RRF; see searchKnowledge).
+  // Optional type filter (comma-separated); body (capped) is returned for RAG prompts.
+  // No userId = the worker's own acting user (system jobs like the upgrade scan).
   "/api/integrations/knowledge-items/search": {
     GET: serviceTokenRoute(async (req, ctx) => {
       requireScope(ctx, "knowledge:read");
@@ -148,14 +149,11 @@ export const integrationRoutes = {
       const limit = Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), 1), 10) : 3;
       const types = (url.searchParams.get("type") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 10);
       if (!q) return Response.json([]);
-      return Response.json(await asOwner(ctx, url.searchParams.get("userId"), (tx) => tx`
-        SELECT id, type, title, source, left(body, 2000) AS body, to_char(created_at, 'YYYY-MM-DD') AS "createdOn"
-        FROM knowledge_items
-        WHERE tsv @@ websearch_to_tsquery('english', ${q})
-          AND (${types.length === 0} OR type = ANY(${textArrayLiteral(types)}::text[]))
-        ORDER BY ts_rank(tsv, websearch_to_tsquery('english', ${q})) DESC, created_at DESC
-        LIMIT ${limit}
-      `));
+      const rows = await asOwner(ctx, url.searchParams.get("userId") ?? ctx.userId, (tx) => searchKnowledge(tx, q, types, limit));
+      return Response.json(rows.map((r: any) => ({
+        id: r.id, type: r.type, title: r.title, source: r.source,
+        body: r.body?.slice(0, 2000) ?? null, createdOn: new Date(r.createdAt).toISOString().slice(0, 10),
+      })));
     }),
   },
 
@@ -1592,7 +1590,7 @@ export const integrationRoutes = {
     }),
   },
 
-  // Pgvector — write a 1536-dim embedding to a knowledge_item. userId in
+  // Pgvector — write a 768-dim (nomic-embed-text, P2.0) embedding to a knowledge_item. userId in
   // body for target-user withTenantTx re-entry. Vector arrives as a
   // number[]; CC formats as a pgvector literal.
   "/api/integrations/knowledge-items/:id/embedding": {
@@ -1604,8 +1602,8 @@ export const integrationRoutes = {
       if (typeof body.userId !== "string" || !UUID_RE.test(body.userId)) {
         throw new HttpError(400, "userId uuid required");
       }
-      if (!Array.isArray(body.embedding) || body.embedding.length !== 1536) {
-        throw new HttpError(400, "embedding must be a number[1536]");
+      if (!Array.isArray(body.embedding) || body.embedding.length !== EMBED_DIM) {
+        throw new HttpError(400, `embedding must be a number[${EMBED_DIM}]`);
       }
       for (const n of body.embedding) {
         if (typeof n !== "number" || !Number.isFinite(n)) throw new HttpError(400, "embedding must be finite numbers");

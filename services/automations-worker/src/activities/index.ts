@@ -12,7 +12,7 @@ export { scanRepoDepUpgrades } from "./upgrader.js";
 export { ingestAdzunaJobs, draftAndPostJobsDigest } from "./jobs.js";
 export { refreshProfileDrafts } from "./profile-refresh.js";
 export { ingestJobEmailLead, logReplyNeeded, fetchGmailMessageFull, draftReplyToEmail, sendGmailReply, ingestInterviewSchedulingEmail } from "./mail-dispatch.js";
-export { researchJobLeadForInterview } from "./interview-prep.js";
+export { researchJobLeadForInterview, researchCompanyForInterview } from "./interview-prep.js";
 export { tailorResumeForJobLead } from "./resume-tailor.js";
 export { remindUpcomingInterviewRounds } from "./interview-reminders.js";
 export { syncGoogleCalendarInterviews } from "./calendar-sync.js";
@@ -30,6 +30,7 @@ export { ingestTravelBookingEmail, buildTripPack } from "./travel.js";
 export { prepareCaBatches, sendPreparedCaBatch } from "./ca-invoices.js";
 export { scanDependencyVulns } from "./security-scan.js";
 export { retrieveKnowledgeContext } from "./knowledge-rag.js";
+export { reactAgentActivity } from "./react-agent.js";
 
 // ─── Google reads ────────────────────────────────────────────────────────────
 

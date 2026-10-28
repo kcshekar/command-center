@@ -37,6 +37,8 @@ const ROUTES: Partial<Record<keyof typeof activities, string>> = {
   draftAndPostJobsDigest: TASK_QUEUES.ollama,
   refreshProfileDrafts: TASK_QUEUES.ollama,
   researchJobLeadForInterview: TASK_QUEUES.ollama,
+  researchCompanyForInterview: TASK_QUEUES.ollama,
+  reactAgentActivity: TASK_QUEUES.ollama,
   tailorResumeForJobLead: TASK_QUEUES.ollama,
   buildOccasionsReport: TASK_QUEUES.ollama,
 };

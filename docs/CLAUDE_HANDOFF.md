@@ -70,7 +70,7 @@ Everything in this section is already built, tested and **live in prod** (prod s
 
 ### Corrections to the rest of this doc
 - **Migrations are not run on API startup.** Run `bun run migrate` (CC) and `pnpm migrate` (worker). Numbers 0051–0068 are **taken**
-  (0067 = P0.3 cron stagger, 0068 = P1.0 `failed_items`); the next free number is **0069**.
+  (0067 = P0.3 cron stagger, 0068 = P1.0 `failed_items`, 0069 = P2.0 768-dim embeddings); the next free number is **0070**.
 - The `google-auth-library` type error in §8 is **fixed** (the worker typecheck is clean).
 - Web dev: `cd apps/web && API_ORIGIN=http://localhost:3001 bun run dev` (bun, not pnpm). API: `API_PORT=3001 bun --env-file=.env apps/api/index.ts` from the repo root.
 - Working rules: `docs/user-tech-flow.md` (no hallucination, confirm risky actions, zero-SSH, BYOK).
@@ -171,7 +171,7 @@ Update callers:
 Add to `services/automations-worker/.env` (Ollama daemon vars, not worker vars):
 ```
 OLLAMA_NUM_PARALLEL=1
-OLLAMA_MAX_LOADED_MODELS=1
+OLLAMA_MAX_LOADED_MODELS=2   # 2 since P2.0: chat model + nomic-embed-text
 OLLAMA_KEEP_ALIVE=30m
 OLLAMA_NUM_THREADS=<physical core count>
 ```
@@ -233,7 +233,7 @@ the TS SDK silently ignores; the SDK field is `spec.timezone`. Fixed in `automat
 3. `bun --env-file=.env apps/api/scripts/resync-schedule-crons.ts` (add `--dry-run` first): pushes catalog crons +
    IST timezone onto existing per-user schedules. Pause state is untouched.
 4. `cd services/automations-worker && pnpm schedules:init`: same for the system schedules.
-5. On the Ollama pod: `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_KEEP_ALIVE=30m`.
+5. On the Ollama pod: `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_MAX_LOADED_MODELS=2` (2 since P2.0), `OLLAMA_KEEP_ALIVE=30m`.
 
 ---
 
@@ -257,12 +257,11 @@ the TS SDK silently ignores; the SDK field is `spec.timezone`. Fixed in `automat
 - **P1.3:** `activities/knowledge-rag.ts` (`retrieveKnowledgeContext`, terms OR-ed; `knowledgeBlock` fences items as data).
 - **P1.4:** A2 retrieves profile/resume/note items once per run and injects them into the job scorer prompt. A11 (the
   "Automater" in the roadmap is the deterministic upgrade scan) quotes the user's own lesson/note that names a package
-  next to that upgrade. It needs `PLATFORM_OWNER_USER_ID` in the worker `.env` (unset = step skipped) + `pnpm schedules:init`.
+  next to that upgrade. It reads the lessons of the worker's acting user (the token's user), so no extra config.
 
 **Phase 1 prod rollout (user runs on the VM):**
 1. `./scripts/deploy.sh` (CC migration 0068 runs before the worker restarts, so the new scope exists when the worker mints).
-2. Worker `.env`: `PLATFORM_OWNER_USER_ID=<your CC user id>`, then `cd services/automations-worker && pnpm schedules:init`.
-3. Add 5–10 items on `/brain`: profile, tech stack, resume summary, 2–3 lessons (e.g. upgrades that bit you).
+2. Add 5–10 items on `/brain`: profile, tech stack, resume summary, 2–3 lessons (e.g. upgrades that bit you).
 
 **Phase 1 DoD:**
 - [x] /brain page exists and shows knowledge_items with search
@@ -326,6 +325,39 @@ See IMPLEMENTATION_ROADMAP.md P1.4 for exact injection points.
 ---
 
 ## 4. Phase 2 — ReAct + Tool Calling (~4 weeks, after Phase 1)
+
+**Status (2026-10-29): P2.0, P2.1, P2.2 and the Interview Prep half of P2.4 built and tested in dev. A2 (P2.3 fan-out B
++ ReAct scoring) is ON HOLD pending the user's Ollama capacity decision.** What shipped:
+- **P2.0:** migration 0069 (`embedding` → `vector(768)`, old vectors dropped, HNSW rebuilt). Embedder uses local
+  `nomic-embed-text` via `ollamaEmbed()` (batched, `search_document:` prefix); no OpenAI key needed. Hybrid search
+  (`searchKnowledge` in knowledge-items routes): full-text + pgvector cosine, RRF k=60, vector arm cut at distance 0.45;
+  query embedded in the API (`embedQuery`, 5 s timeout, falls back to full-text). Both search endpoints use it.
+- **P2.2:** `ollamaWithTools()` (/api/chat, same mutex).
+- **P2.1:** `activities/react-agent.ts`, 5 tools. userId is bound by the activity, write_knowledge is opt-in,
+  web_search = SerpAPI BYOK (no key → "unavailable"), refuses queries with "@". At max iterations it asks for a final
+  answer instead of throwing.
+- **P2.4 (Interview Prep):** `researchCompanyForInterview` (ReAct: web_search + search_knowledge + get_profile) runs
+  before the draft behind `patched("interview-prep-react-v1")`. `verifiedBullets` drops any [web]/[notes] bullet whose
+  tool returned nothing: in dev, llama3.2:3b tagged invented facts "[web]" with web search unavailable.
+- **P2.3 fan-out A (Gmail accounts):** already covered: each pinned account has its own `a5.mail:<user>:<email>`
+  schedule (0045), so accounts already run as independent parallel workflows. Nothing to build.
+- **Measured on chandu-h110 (CPU-only, Ollama 0.32.6):** decode ~9 tok/s, prompt ~33 tok/s, throughput flat at
+  1/2/4 concurrent requests. ReAct research ≈ 75 s; Interview Prep end to end ≈ 2 min.
+
+**Phase 2 prod rollout (user):**
+1. On the Ollama pod: `ollama pull nomic-embed-text`; set `OLLAMA_MAX_LOADED_MODELS=2` (was 1: with 1, every embed
+   evicts the chat model), keep `OLLAMA_KEEP_ALIVE=30m`.
+2. `OLLAMA_HOST` must be set in the **API** `.env` too (query embeddings); without it search is full-text only.
+3. `./scripts/deploy.sh` (migration 0069 drops old vectors).
+4. Turn on `knowledge-embedder-hourly` from the dashboard (D4 resolved: embeddings are local now).
+5. Optional: a `serpapi` key in Secrets enables web_search for Interview Prep.
+
+**Phase 2 DoD:**
+- [x] `reactAgentActivity` exists and runs 5 tools (live: web_search, search_knowledge, fetch_job_details, get_profile, write_knowledge)
+- [x] `ollamaWithTools()` works with llama3.2:3b tool_calls (mechanically reliable; reasoning quality weak, see guard)
+- [ ] A2 uses child workflows for parallel job processing: **on hold** (user decision)
+- [x] Interview Prep uses ReAct for company research
+- [x] Multiple Gmail accounts triaged in parallel (already true via per-account schedules)
 
 ### P2.0 — Switch Embedder to nomic-embed-text (M3)
 Run: `ollama pull nomic-embed-text` (768-dim).  

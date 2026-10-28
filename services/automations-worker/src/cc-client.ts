@@ -296,9 +296,9 @@ export const cc = {
   }) => call<{ id: string; attempts: number }>(`/api/integrations/failed-items`, { method: "POST", body: JSON.stringify(body) }),
 
   // N13 / P1.3 — keyword search over the user's knowledge items (websearch syntax).
-  searchKnowledgeItems: (userId: string, q: string, limit = 3, type?: string) =>
+  searchKnowledgeItems: (userId: string | undefined, q: string, limit = 3, type?: string) =>
     call<Array<{ id: string; type: string; title: string; source: string; body: string | null; createdOn: string }>>(
-      `/api/integrations/knowledge-items/search?userId=${encodeURIComponent(userId)}&q=${encodeURIComponent(q)}&limit=${limit}${type ? `&type=${encodeURIComponent(type)}` : ""}`
+      `/api/integrations/knowledge-items/search?q=${encodeURIComponent(q)}&limit=${limit}${userId ? `&userId=${encodeURIComponent(userId)}` : ""}${type ? `&type=${encodeURIComponent(type)}` : ""}`
     ),
 
   // R11 / R7 / R9 — life trackers.

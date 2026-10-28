@@ -8,7 +8,7 @@ import { cc } from "../cc-client.js";
 export interface KnowledgeSnippet { id: string; type: string; title: string; source: string; body: string | null }
 
 export async function retrieveKnowledgeContext(input: {
-  userId: string;
+  userId?: string;   // omitted = the worker's acting user (system jobs)
   query: string;
   types?: string[];
   limit?: number;

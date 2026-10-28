@@ -75,7 +75,7 @@ async function fetchLatest(pkg: string): Promise<string | null> {
 export async function scanRepoDepUpgrades(input: {
   routeKey?: string;
   rootDir?: string;
-  userId?: string;   // P1.4: whose /brain lessons to check (system schedule: PLATFORM_OWNER_USER_ID)
+  userId?: string;   // P1.4: whose /brain lessons to check; omitted = the worker's acting user
 } = {}): Promise<{
   packageJsons: number;
   depsExamined: number;
@@ -142,9 +142,7 @@ export async function scanRepoDepUpgrades(input: {
   // gets quoted next to that upgrade, so the scan doesn't re-propose it blind.
   // Only lessons the user wrote: A8's auto-ingested release notes mention
   // half the ecosystem and would flag everything.
-  const lessons = input.userId
-    ? await retrieveKnowledgeContext({ userId: input.userId, query: top.map((d) => d.pkg).join(" "), types: ["lesson", "note"], limit: 10 })
-    : [];
+  const lessons = await retrieveKnowledgeContext({ userId: input.userId, query: top.map((d) => d.pkg).join(" "), types: ["lesson", "note"], limit: 10 });
   const lessonFor = (pkg: string) => lessons.find((l) => l.source === "user" && `${l.title} ${l.body ?? ""}`.toLowerCase().includes(pkg.toLowerCase()));
   const header = `🧰 *A11 Upgrade scan — ${dayTag}*\n\n` +
     `Scanned ${pkgFiles.length} package.json file(s), ${all.length} unique deps.\n` +

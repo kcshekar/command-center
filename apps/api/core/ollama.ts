@@ -73,3 +73,25 @@ ${text}`;
     category: categories.includes(out.category) ? out.category : "other",
   };
 }
+
+// P2.0 — query side of hybrid knowledge search (nomic-embed-text, 768-dim,
+// "search_query: " task prefix). null when Ollama is unset, down or slow, and
+// search falls back to full-text only.
+export const EMBED_DIM = 768;
+export async function embedQuery(q: string): Promise<number[] | null> {
+  const host = process.env.OLLAMA_HOST;
+  if (!host) return null;
+  try {
+    const res = await fetch(`${host}/api/embed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: process.env.EMBED_MODEL ?? "nomic-embed-text", input: `search_query: ${q}`, truncate: true }),
+      signal: AbortSignal.timeout(5000), // a cold model load on CPU takes ~2s
+    });
+    if (!res.ok) return null;
+    const v = ((await res.json()) as { embeddings?: number[][] }).embeddings?.[0];
+    return Array.isArray(v) && v.length === EMBED_DIM ? v : null;
+  } catch {
+    return null;
+  }
+}

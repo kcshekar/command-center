@@ -190,6 +190,60 @@ export async function ollamaJson(prompt: string, schema?: unknown, opts: { num_p
   return JSON.parse(data.response);
 }
 
+// P2.2: tool calling for the ReAct loop. /api/chat (tools aren't supported on
+// /api/generate). Same mutex: one model call at a time per worker process.
+export interface ChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: ToolCall[];
+  tool_name?: string;
+}
+export interface ToolCall { function: { name: string; arguments: Record<string, unknown> } }
+export interface ToolDef {
+  type: "function";
+  function: { name: string; description: string; parameters: { type: "object"; properties: Record<string, unknown>; required?: string[] } };
+}
+
+export async function ollamaWithTools(messages: ChatMessage[], tools: ToolDef[]): Promise<{ content: string; tool_calls?: ToolCall[] }> {
+  const data = await _mutex.runExclusive(async () => {
+    const res = await fetch(`${HOST}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: MODEL, messages, tools, stream: false,
+        options: { temperature: 0, num_ctx: NUM_CTX, num_predict: 500 },
+      }),
+    });
+    if (!res.ok) throw new Error(`Ollama chat error: ${res.status}`);
+    return res.json() as Promise<{ message?: { content?: string; tool_calls?: ToolCall[] } }>;
+  });
+  return { content: String(data.message?.content ?? "").trim(), tool_calls: data.message?.tool_calls };
+}
+
+// P2.0: local embeddings (nomic-embed-text, 768-dim). nomic wants a task
+// prefix: "search_document: " for stored text, "search_query: " for queries.
+// Needs OLLAMA_MAX_LOADED_MODELS >= 2, or every embed evicts the chat model.
+const EMBED_MODEL = process.env.EMBED_MODEL ?? "nomic-embed-text";
+export const EMBED_DIM = 768;
+
+export async function ollamaEmbed(texts: string[], kind: "document" | "query"): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  const data = await _mutex.runExclusive(async () => {
+    const res = await fetch(`${HOST}/api/embed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: EMBED_MODEL, input: texts.map((t) => `search_${kind}: ${t}`), truncate: true }),
+    });
+    if (!res.ok) throw new Error(`Ollama embed error: ${res.status}`);
+    return res.json() as Promise<{ embeddings?: number[][] }>;
+  });
+  const out = data.embeddings ?? [];
+  if (out.length !== texts.length || out.some((v) => v.length !== EMBED_DIM)) {
+    throw new Error(`Ollama embed returned ${out.length}×${out[0]?.length} (expected ${texts.length}×${EMBED_DIM})`);
+  }
+  return out;
+}
+
 function generate(body: unknown): Promise<any> {
   return _mutex.runExclusive(async () => {
     const res = await fetch(`${HOST}/api/generate`, {

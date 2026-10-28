@@ -4,6 +4,7 @@ import { writeAudit } from "../../core/audit";
 import { textArrayLiteral } from "../../core/pg-array";
 import { temporalClient } from "../../core/temporal";
 import { log } from "../../core/log";
+import { embedQuery } from "../../core/ollama";
 
 const TEMPORAL_TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE ?? "personal-automations";
 
@@ -47,6 +48,53 @@ function asBool(v: unknown, dflt = false): boolean {
 function asMetadata(v: unknown): Record<string, unknown> {
   if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
   return {};
+}
+
+// P2.0 hybrid search: Postgres full-text and pgvector cosine (local
+// nomic-embed-text), each top-20, merged with reciprocal rank fusion (k=60).
+// Runs in the caller's RLS tx. Without a query embedding (Ollama down/unset)
+// it's plain full-text. The vector arm drops anything with cosine distance
+// >= 0.45 (similarity < 0.55): otherwise "nearest" always returns something,
+// even for a query nothing matches.
+// ponytail: 0.45 is from a small dev sample (related 0.60-0.70, unrelated 0.31-0.52); tune on real data.
+export async function searchKnowledge(tx: any, q: string, types: string[], limit: number) {
+  const vec = await embedQuery(q);
+  const lit = vec ? `[${vec.join(",")}]` : null;
+  const typeOk = types.length === 0;
+  const typeList = textArrayLiteral(types);
+  return tx`
+    WITH fts AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, websearch_to_tsquery('english', ${q})) DESC) AS r
+      FROM knowledge_items
+      WHERE tsv @@ websearch_to_tsquery('english', ${q})
+        AND (${typeOk} OR type = ANY(${typeList}::text[]))
+      ORDER BY r LIMIT 20
+    ), vec AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> ${lit}::vector) AS r
+      FROM knowledge_items
+      WHERE embedding IS NOT NULL
+        AND embedding <=> ${lit}::vector < 0.45
+        AND (${typeOk} OR type = ANY(${typeList}::text[]))
+      ORDER BY r LIMIT 20
+    ), rrf AS (
+      SELECT COALESCE(f.id, v.id) AS id,
+             COALESCE(1.0 / (60 + f.r), 0) + COALESCE(1.0 / (60 + v.r), 0) AS score
+      FROM fts f FULL OUTER JOIN vec v ON f.id = v.id
+    )
+    SELECT ki.id,
+           ki.user_id          AS "userId",
+           ki.type, ki.title, ki.body, ki.tags, ki.source,
+           ki.source_id        AS "sourceId",
+           ki.related,
+           ki.shared_with_org  AS "sharedWithOrg",
+           ki.metadata,
+           ki.created_at       AS "createdAt",
+           ki.updated_at       AS "updatedAt",
+           r.score             AS rank
+    FROM rrf r JOIN knowledge_items ki ON ki.id = r.id
+    ORDER BY r.score DESC, ki.updated_at DESC
+    LIMIT ${limit}
+  `;
 }
 
 export const knowledgeItemRoutes = {
@@ -143,31 +191,11 @@ export const knowledgeItemRoutes = {
   "/api/knowledge-items/search": {
     GET: tenantRoute(async (req, ctx) => {
       const url = new URL(req.url);
-      const q = (url.searchParams.get("q") ?? "").trim();
+      const q = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
       if (!q) throw new HttpError(400, "q is required");
       const type = url.searchParams.get("type");
       const limit = Math.max(1, Math.min(50, Number(url.searchParams.get("limit") ?? 20)));
-
-      // websearch_to_tsquery: never throws on user input, and supports
-      // "quoted phrases", `or` and -exclusions in the /brain search box.
-      const rows = await ctx.tx`
-        SELECT id,
-               user_id          AS "userId",
-               type, title, body, tags, source,
-               source_id        AS "sourceId",
-               related,
-               shared_with_org  AS "sharedWithOrg",
-               metadata,
-               created_at       AS "createdAt",
-               updated_at       AS "updatedAt",
-               ts_rank(tsv, websearch_to_tsquery('english', ${q})) AS rank
-        FROM knowledge_items
-        WHERE tsv @@ websearch_to_tsquery('english', ${q})
-          AND (${type}::text IS NULL OR type = ${type})
-        ORDER BY rank DESC, updated_at DESC
-        LIMIT ${limit}
-      `;
-      return Response.json(rows);
+      return Response.json(await searchKnowledge(ctx.tx, q, type ? [type] : [], limit));
     }),
   },
 

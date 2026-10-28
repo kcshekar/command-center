@@ -52,8 +52,8 @@ async function main() {
   });
 
   // Pgvector embedder — hourly sweep. Picks up to N unembedded knowledge_items
-  // across all users in the org and runs them through OpenAI's embedding
-  // endpoint using each user's own BYOK key. Silently skips users without one.
+  // across all users in the org and embeds them on the local Ollama
+  // (nomic-embed-text, P2.0). Paused until turned on from the dashboard.
   await upsertSchedule(client, {
     scheduleId: "knowledge-embedder-hourly",
     cron: "44 * * * *", // P0.3 stagger
@@ -82,8 +82,7 @@ async function main() {
     scheduleId: "a11-upgrader-monthly",
     cron: "0 11 1 * *",
     workflowType: "platformUpgradeScanWorkflow",
-    // userId: whose /brain lessons the scan checks (P1.4); unset = skip that step.
-    args: [{ routeKey: process.env.PLATFORM_UPGRADE_ROUTE_KEY ?? digest, userId: process.env.PLATFORM_OWNER_USER_ID || undefined }],
+    args: [{ routeKey: process.env.PLATFORM_UPGRADE_ROUTE_KEY ?? digest }],
     taskQueue,
     policies: commonPolicies,
     timezone: scheduleTimezone,
