@@ -2,7 +2,8 @@ import "dotenv/config";
 import { Client, Connection } from "@temporalio/client";
 
 async function main() {
-  const scheduleId = process.argv[2];
+  // pnpm forwards its `--` separator as a literal argv entry — skip it.
+  const scheduleId = process.argv.slice(2).find((a) => a !== "--");
   if (!scheduleId) {
     console.error("Usage: pnpm schedules:delete -- <schedule-id>");
     process.exit(1);
