@@ -2,7 +2,7 @@
 > **Updated:** 2026-10-28 — Added M2, M3, M5, M6, M7, M8, M9, M11, M12 + DLQ into phases.
 > **Purpose:** Machine-readable roadmap for Claude/Gemini agents. Load this doc when the user asks to implement any Phase 0–4 item.
 > **Status:** PLANNED — Phase 0 ready to implement.
-> **Last Updated:** 2026-10-27
+> **Last Updated:** 2026-10-28
 > **DO NOT START** any Phase 1+ item before Phase 0 is fully shipped.
 
 ---
@@ -35,20 +35,23 @@
 
 **Implementation:**
 1. Modify `services/automations-worker/src/ollama.ts`:
-   - Add module-level `Mutex` from `async-mutex` package (or write a 5-line semaphore class). All `ollamaJson()` and `ollamaText()` calls wrap in `_mutex.runExclusive()`.
-   - Add optional `ctx` parameter (default 512 for classification, 2048 for generation) and pass as `options.num_ctx` in request body.
-   - Short classification prompts (classifyEmail, extractExpense, extractBill): use `ctx=512`.
-   - Generation prompts (ollamaText for drafts, affirmations): use `ctx=2048`.
-2. Add to `services/automations-worker/.env`:
+   - Add module-level `Mutex` from `async-mutex` package. All `ollamaJson()` and `ollamaText()` calls wrap in `_mutex.runExclusive()`.
+   - Add optional `ctx` parameter and pass as `options.num_ctx`. Default: 512 for classification, 2048 for generation.
+   - Add `options.num_predict` cap to every Ollama call:
+     - Classification calls (`classifyEmail`, `extractExpense`, `extractBill`, `classifyNewsItem`, job scorer): `num_predict: 150`
+     - Draft generation (`ollamaText`): `num_predict: 500`
+     - Structured JSON extraction (other): `num_predict: 100`
+   - Short classification prompts (classifyEmail, extractExpense, extractBill): use `ctx=512, num_predict=150`.
+   - Generation prompts (ollamaText for drafts, affirmations): use `ctx=2048, num_predict=500`.
+2. Add to `services/automations-worker/.env` (these are read by the **Ollama daemon**, not the worker — set before starting Ollama):
    ```
    OLLAMA_NUM_PARALLEL=1
    OLLAMA_MAX_LOADED_MODELS=1
    OLLAMA_NUM_THREADS=<physical_core_count_of_mac>
    OLLAMA_KEEP_ALIVE=30m
    ```
-   These are read by the Ollama daemon, not the worker. Set them before starting Ollama.
 
-**Package:** `async-mutex` — already likely in `node_modules`. If not: `pnpm add async-mutex` in `services/automations-worker`.
+**Package:** `async-mutex` — check if already in `node_modules`. If not: `pnpm add async-mutex` in `services/automations-worker`.
 
 ---
 
@@ -90,25 +93,15 @@
 2. Truncate user content: snippet/body max 1000 chars, subject max 200 chars, from max 100 chars.
 3. Tighten schema rejection: if Ollama returns JSON that fails schema validation → return null (already partially done, make explicit for all 3 functions).
 
-### P0.5 — OLLAMA_KEEP_ALIVE + num_predict Cap (M12)
-**Status:** NOT STARTED  
-**Priority:** IMPORTANT  
-**Problem:** Ollama unloads model between runs → 5–15s cold-start delay per automation. Also no upper bound on tokens generated.
-
-**Implementation:**
-1. Add to `services/automations-worker/.env`: `OLLAMA_KEEP_ALIVE=30m` (read by Ollama daemon, not worker)
-2. Add `num_predict` to all Ollama calls:
-   - Classification calls (`classifyEmail`, `extractExpense`, `extractBill`, `classifyNewsItem`): `num_predict: 150`
-   - Draft generation calls (`ollamaText`): `num_predict: 500`
-   - Structured JSON extraction: `num_predict: 100`
-3. This bounds maximum token generation per call, preventing runaway generation from stuck prompts.
-
 **Definition of Done (Phase 0):**
 - [ ] Temporal Web UI shows `binary/encrypted` payloads, not plain text
-- [ ] Running morning-brief + inbox-triage simultaneously does NOT spike CPU/freeze Mac
+- [ ] Running morning-brief + inbox-triage simultaneously does NOT spike CPU/freeze Mac (mutex confirmed working)
 - [ ] Cron schedule table shows staggered times (not all at 07:00)
-- [ ] Email prompts use XML delimiters in all 3 Ollama extraction functions
-- [ ] OLLAMA_KEEP_ALIVE set; cold-start delay eliminated between automations
+- [ ] Email prompts use XML delimiters in all 3 Ollama extraction functions (`classifyEmail`, `extractExpense`, `extractBill`)
+- [ ] `OLLAMA_KEEP_ALIVE=30m` set in env; all Ollama calls have `num_predict` cap
+- [ ] `worker.ts` has `maxTaskQueueActivitiesPerSecond: 2` and `maxConcurrentActivityTaskExecutions: 4`
+
+> **Note (M12 merged into P0.2):** `OLLAMA_KEEP_ALIVE` and `num_predict` caps are part of P0.2, not a separate step. Do not implement them twice.
 
 ---
 

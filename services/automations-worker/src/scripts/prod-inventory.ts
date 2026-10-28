@@ -25,7 +25,7 @@ const CC_REQUIRED = [
   "GCS_BUCKET_NAME", "GCS_SERVICE_ACCOUNT_KEY", "OLLAMA_HOST",
 ];
 const W_REQUIRED = [
-  "AUTOMATIONS_DATABASE_URL", "ADMIN_DATABASE_URL", "AUTOMATIONS_ENCRYPTION_SECRET",
+  "AUTOMATIONS_DATABASE_URL", "AUTOMATIONS_ENCRYPTION_SECRET",
   "TEMPORAL_ADDRESS", "TEMPORAL_NAMESPACE", "TEMPORAL_TASK_QUEUE", "CC_BASE_URL",
   "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI",
   "OLLAMA_HOST", "OLLAMA_MODEL", "WORKER_CALLBACK_PORT", "WORKER_CALLBACK_TOKEN",
@@ -105,6 +105,8 @@ async function main() {
     const queue = (e: Record<string, string>) => e.TEMPORAL_TASK_QUEUE || "personal-automations"; // both sides' default
     console.log(`TEMPORAL_NAMESPACE matches: ${cc.TEMPORAL_NAMESPACE === w.TEMPORAL_NAMESPACE} · task queue matches: ${queue(cc) === queue(w)}`);
   }
+  // pnpm migrate: ADMIN_DATABASE_URL, else the main .env DATABASE_URL
+  console.log(`worker migrate admin: ${w?.ADMIN_DATABASE_URL ? "ADMIN_DATABASE_URL" : cc?.DATABASE_URL ? "main .env DATABASE_URL" : "NONE (migrate will fail)"}`);
   console.log(`chrome at CHROME_PATH: ${cc?.CHROME_PATH ? existsSync(cc.CHROME_PATH) : "unset"}`);
   await migrations("CC", cc?.DATABASE_URL ?? cc?.APP_DATABASE_URL, join(root, "apps/api/migrations"));
   await migrations("worker", w?.AUTOMATIONS_DATABASE_URL, join(worker, "migrations"));
